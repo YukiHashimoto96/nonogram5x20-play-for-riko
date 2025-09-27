@@ -64,7 +64,6 @@
   }
   canvas{
     touch-action:none; background:var(--grid-bg); border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
-    /* stickyヘッダで隠れないよう、スクロール時の余白 */
     scroll-margin-top: calc(90px + env(safe-area-inset-top,0));
     max-width:100%;
   }
@@ -108,7 +107,6 @@ let grid = Array.from({length:R},()=>Array(C).fill(EMPTY));
 const thickEvery=5, thin=1, thick=3;
 const yAdjRatio=-0.05;                  // 数字を少し上に
 const clueRatio=0.82;                   // 数字サイズ（セル比）
-const fillStyle={mRatio:0.12, rimRatio:0.055, radRatio:0.20}; // 黒マスの見た目（リム少し細め）
 
 let solvedShown = false;  // お祝い表示済み
 let locked = false;       // 盤面ロック
@@ -134,8 +132,7 @@ document.getElementById('closeBanner').onclick=()=>hideBanner();
 
 // フロー内バナー（重ならない）
 function showBanner(message="完成！\nりこちゃんお誕生日おめでとう！！"){
-  const el = document.getElementById('bannerMsg');
-  el.textContent = message; // \n は CSS pre-line で改行表示
+  document.getElementById('bannerMsg').textContent = message;
   bannerEl.classList.add('show');
   window.scrollTo({top: 0, behavior: 'smooth'});
 }
@@ -216,14 +213,12 @@ function onSolved(){
 function measurements(){
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
 
-  // 横方向は「実際のコンテナ幅」
   const wrapW = Math.floor(wrapEl.clientWidth || (document.documentElement.clientWidth - 24));
 
-  // 使える高さ：viewport 高さ − ヘッダ − バナー − 余白
   const headerH = Math.ceil(barEl.getBoundingClientRect().height);
   const bannerH = bannerEl.classList.contains('show') ? Math.ceil(bannerEl.getBoundingClientRect().height) : 0;
   const vpH = (window.visualViewport?.height || window.innerHeight);
-  const usableH = Math.max(120, Math.floor(vpH - headerH - bannerH - 24)); // 最低確保
+  const usableH = Math.max(120, Math.floor(vpH - headerH - bannerH - 24));
 
   const wCells = ls + C;
   const hCells = ts + R;
@@ -232,8 +227,8 @@ function measurements(){
   const maxCellByW = Math.floor((wrapW - pad*2) / wCells);
   const maxCellByH = Math.floor((usableH - pad*2) / hCells);
 
-  // 必ず収めるため、最小セルを 10px まで許容
-  const cell = Math.max(10, Math.min(maxCellByW, maxCellByH, 64));
+  // 品質確保のため最小セルを16pxに引き上げ（丸角と塗りの見栄えを維持）
+  const cell = Math.max(16, Math.min(maxCellByW, maxCellByH, 64));
 
   return {ls, ts, pad, cell, wCells, hCells};
 }
@@ -244,21 +239,47 @@ function resizeCanvas(){
   const cssW = Math.max(0, wCells*cell + pad*2);
   const cssH = Math.max(0, hCells*cell + pad*2);
 
-  // CSS ピクセルでの表示サイズ
   canvas.style.width = cssW + 'px';
   canvas.style.height = cssH + 'px';
 
-  // 高DPI 実ピクセル
   const dpr = window.devicePixelRatio || 1;
   canvas.width  = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
+  // Safariでの線端差を抑える
+  ctx.imageSmoothingEnabled = true;
+  ctx.lineCap = 'butt';
+  ctx.lineJoin = 'miter';
+  ctx.miterLimit = 2.5;
+
   canvas.dataset.cell=cell; canvas.dataset.pad=pad;
 }
 
-/* ===== 描画（順序を変更：マス→×→グリッド→手がかり） =====
-   ※ グリッド線を最後に描くことで、白い縁が罫線に被って“浮く”印象を解消します。 */
+/* ==== 角丸矩形（Safariは roundRect が安定。なければ arcTo でフォールバック） ==== */
+function pathRR(ctx, x,y,w,h,r){
+  const rr = Math.max(2, Math.min(r, w/2, h/2)); // 小さすぎる丸角は潰れやすいので下限2px
+  if (typeof ctx.roundRect === 'function'){
+    ctx.beginPath();
+    ctx.roundRect(x, y, w, h, rr);
+    return;
+  }
+  ctx.beginPath();
+  ctx.moveTo(x+rr, y);
+  ctx.arcTo(x+w, y,   x+w, y+h, rr);
+  ctx.arcTo(x+w, y+h, x,   y+h, rr);
+  ctx.arcTo(x,   y+h, x,   y,   rr);
+  ctx.arcTo(x,   y,   x+w, y,   rr);
+  ctx.closePath();
+}
+function roundRectStroke(x,y,w,h,r,color,lw){
+  ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=lw; pathRR(ctx,x,y,w,h,r); ctx.stroke(); ctx.restore();
+}
+function roundRectFill(x,y,w,h,r,color){
+  ctx.save(); ctx.fillStyle=color; pathRR(ctx,x,y,w,h,r); ctx.fill(); ctx.restore();
+}
+
+/* ===== 描画（順序：塗り→×→グリッド→手がかり） ===== */
 function draw(){
   resizeCanvas();
   const cell=+canvas.dataset.cell, pad=+canvas.dataset.pad;
@@ -270,26 +291,26 @@ function draw(){
   ctx.fillStyle=css('--grid-bg'); ctx.fillRect(x0,y0,boardW,boardH);
   ctx.fillStyle=css('--header-bg'); if(ts>0) ctx.fillRect(x0,y0,boardW,ts*cell); if(ls>0) ctx.fillRect(x0,y0,ls*cell,boardH);
 
-  // まず「塗り」を描く（白リム＋黒）
+  // ==== まず黒マスを描画（ピクセル基準のクランプで“スカスカ”を抑制） ====
   const gx0=x0+ls*cell, gy0=y0+ts*cell;
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
     if(grid[r][c]===FILLED){
       const x=gx0+c*cell, y=gy0+r*cell;
-      // リムと塗りのサイズをセル比から計算（以前の雰囲気に近づける）
-      const rim = Math.max(1, Math.floor(fillStyle.rimRatio*cell));
-      const m   = Math.max(rim*2, Math.floor(fillStyle.mRatio*cell)); // リムが線に触れにくいよう余白を確保
-      const rad = fillStyle.radRatio*cell;
 
-      // 白リム（完全にセル内で完結するよう、stroke領域も十分に内側に）
-      roundRectStroke(x+m,y+m,cell-2*m,cell-2*m,Math.max(0,rad-1),'#fff',rim);
+      // 端末差を吸収するためのピクセルベース調整
+      const rim = Math.max(1, Math.min(2, Math.floor(cell*0.06)));             // 1〜2px
+      const m   = Math.max(2, Math.min(Math.floor(cell*0.14), Math.floor(cell/4))); // 外周マージン
+      const innerPad = (cell >= 30) ? Math.max(1, Math.floor(rim*0.8)) : 1;    // 小セルでの過剰縮小を防ぐ
+      const rad = Math.max(2, Math.floor(cell*0.18));                           // 角丸は最低2px
 
-      // 中の黒（リムよりさらに一段階小さくすることで“浮き”を抑制）
-      const innerPad = Math.max(1, Math.floor(rim*0.8));
-      roundRectFill(x+m+innerPad,y+m+innerPad,cell-2*(m+innerPad),cell-2*(m+innerPad),Math.max(0,rad-2),'#000');
+      // 白リム（セル内に完全に収める）
+      roundRectStroke(x+m, y+m, cell-2*m, cell-2*m, Math.max(0,rad-1), '#fff', rim);
+      // 中の黒（リムより一段内側）
+      roundRectFill(x+m+innerPad, y+m+innerPad, cell-2*(m+innerPad), cell-2*(m+innerPad), Math.max(0,rad-2), '#000');
     }
   }
 
-  // × を描く
+  // ×
   ctx.strokeStyle=css('--x');
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
     if(grid[r][c]===MARKX){
@@ -301,10 +322,10 @@ function draw(){
     }
   }
 
-  // グリッド線（最後に重ねる＝罫線が常に最前面）
+  // グリッド線（最前面に）
   drawGridLines();
 
-  // 手がかりの状態を計算してから、手がかりを最後に描く（線より上に文字）
+  // 手がかり
   const colInfo = COL_CLUES.map((cl,j)=>lineStatus(getCol(j),cl));
   const rowInfo = ROW_CLUES.map((cl,i)=>lineStatus(getRow(i),cl));
   drawColClues(colInfo, ls, ts, x0,y0,cell);
@@ -312,19 +333,16 @@ function draw(){
 
   function drawGridLines(){
     ctx.strokeStyle=css('--line');
-    // 縦線
     for(let j=0;j<=ls+C;j++){
       const X=x0+j*cell, k=j-ls;
       ctx.lineWidth=(k%thickEvery===0)?thick:thin;
       ctx.beginPath(); ctx.moveTo(X,y0); ctx.lineTo(X,y0+boardH); ctx.stroke();
     }
-    // 横線
     for(let i=0;i<=ts+R;i++){
       const Y=y0+i*cell, k=i-ts;
       ctx.lineWidth=(k%thickEvery===0)?thick:thin;
       ctx.beginPath(); ctx.moveTo(x0,Y); ctx.lineTo(x0+boardW,Y); ctx.stroke();
     }
-    // 外枠
     ctx.lineWidth=thick; ctx.strokeRect(x0,y0,boardW,boardH);
   }
 
@@ -369,9 +387,6 @@ function draw(){
     ctx.beginPath(); ctx.moveTo(x+xm,y+cell-xm); ctx.lineTo(x+cell-xm,y+xm); ctx.stroke();
     ctx.restore();
   }
-  function roundRectStroke(x,y,w,h,r,color,lw){ ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=lw; pathRR(x,y,w,h,r); ctx.stroke(); ctx.restore(); }
-  function roundRectFill(x,y,w,h,r,color){ ctx.save(); ctx.fillStyle=color; pathRR(x,y,w,h,r); ctx.fill(); ctx.restore(); }
-  function pathRR(x,y,w,h,r){ const rr=Math.min(r,w/2,h/2); ctx.beginPath(); ctx.moveTo(x+rr,y); ctx.arcTo(x+w,y,x+w,y+h,rr); ctx.arcTo(x+w,y+h,x,y+h,rr); ctx.arcTo(x,y+h,x,y,rr); ctx.arcTo(x,y,x+w,y,rr); ctx.closePath(); }
 }
 
 // ---- 操作（ロック中は無効）
