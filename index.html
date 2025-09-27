@@ -3,47 +3,72 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="robots" content="noindex,nofollow">
-<!-- <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"> -->
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>りこちゃん用</title>
 <style>
   :root{
     --grid-bg:#f8f8f8; --header-bg:#f6f1cd;
     --line:#000; --x:#808080; --warn:#d74a4a;
+    --btn:#111; --btn-hover:#222; --accent:#0b84ff;
   }
   html,body{margin:0;padding:0;background:#fff;color:#111;font-family:system-ui,-apple-system,"Segoe UI",Arial,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif}
-  .bar{position:sticky;top:0;z-index:10;display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px;border-bottom:1px solid #e5e5e5;background:#fff}
-  .bar button{padding:8px 10px;border:1px solid #ccc;border-radius:8px;background:#fff}
-  .bar button:hover{background:#f3f3f3}
-  .wrap{display:flex;justify-content:center;padding:10px}
-  canvas{touch-action:none;background:var(--grid-bg);border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.06)}
-  .small{color:#666;font-size:12px}
 
-  /* 祝バナー（暗転なし・盤面はそのまま見える） */
-  .toast{
-    position:fixed; top:12px; left:50%; transform:translateX(-50%);
+  /* 上部バー（ノッチ考慮） */
+  .bar{
+    position:sticky; top:0; z-index:10; display:flex; gap:10px; flex-wrap:wrap; align-items:center;
+    padding:calc(10px + env(safe-area-inset-top,0)) 12px 12px; border-bottom:1px solid #e5e5e5; background:#fff
+  }
+  .bar button{
+    padding:10px 14px;
+    border:1px solid var(--btn);
+    border-radius:12px;
+    background:var(--btn);
+    color:#fff;
+    font-weight:800;
+    font-size:16px;
+    letter-spacing:.02em;
+    box-shadow:0 2px 10px rgba(0,0,0,.08);
+    cursor:pointer;
+  }
+  .bar button:hover{background:var(--btn-hover)}
+  .small{
+    color:#111;
+    font-size:15px;
+    font-weight:800;
+    padding:6px 10px;
+    border-radius:999px;
+    background:rgba(11,132,255,.10);
+    border:1px solid rgba(11,132,255,.25);
+  }
+
+  /* 祝バナー：フロー内に出す＝キャンバスを押し下げる（重ならない） */
+  .banner{
+    display:none; margin:10px auto 0; width:min(92vw,520px);
     background:#fff; color:#111; border:1px solid #ddd; border-radius:12px;
     padding:14px 18px; box-shadow:0 6px 24px rgba(0,0,0,.15);
-    z-index:9999; width: min(92vw, 520px);
-    display:flex; flex-direction:column; align-items:center; gap:10px;
   }
-  .toast[hidden]{display:none;}
-  .toast .msg{white-space:pre-line; font-weight:700; text-align:center; font-size:18px;}
-  .toast .close{border:none; background:#111; color:#fff; padding:8px 14px; border-radius:10px; font-weight:700;}
+  .banner.show{display:flex; flex-direction:column; align-items:center; gap:10px;}
+  .banner .msg{white-space:pre-line; font-weight:700; text-align:center; font-size:18px;}
+  .banner .close{border:none; background:#111; color:#fff; padding:8px 14px; border-radius:10px; font-weight:700; cursor:pointer;}
+
+  .wrap{display:flex;justify-content:center;padding:10px}
+  canvas{touch-action:none;background:var(--grid-bg);border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.06)}
 </style>
 </head>
 <body>
 <div class="bar">
-  <button id="reset">リセット</button>
-  <button id="savePng">PNG保存</button>
-  <span class="small">タップ：空→黒→×→空（達成×・矛盾赤／クリアでお祝い＆ロック）</span>
+  <button id="reset" aria-label="盤面をリセット">リセット</button>
+  <button id="saveImg" aria-label="画像として保存">画像保存</button>
+  <span class="small">タップ：空→黒→×→空</span>
 </div>
-<div class="wrap"><canvas id="board" width="600" height="600"></canvas></div>
 
-<!-- 暗転しない祝バナー（中央揃え＆ボタン下配置） -->
-<div id="toast" class="toast" hidden>
-  <div id="toastMsg" class="msg"></div>
-  <button id="closeToast" class="close">OK</button>
+<!-- フロー内バナー（重ならない） -->
+<div id="banner" class="banner" aria-live="polite">
+  <div id="bannerMsg" class="msg"></div>
+  <button id="closeBanner" class="close">OK</button>
 </div>
+
+<div class="wrap"><canvas id="board" width="600" height="600" role="img" aria-label="ノノグラムの盤面。タップで黒、二回でバツ、三回で空に戻ります。"></canvas></div>
 
 <script>
 /* ===== 固定パズル（5x5・唯一解：X柄） ===== */
@@ -72,25 +97,32 @@ let locked = false;       // 盤面ロック
 // ドラッグ塗りの「モード」（起点で決まった最終状態をそのまま塗る）
 let isDown=false, lastRC=null, dragPaintState=null; // null=未決定, 0/1/2=EMPTY/FILLED/MARKX
 
+// --- 進捗の保存用キー
+const LS_KEY = 'nonogram-save-v1';
+
 // ---- UI
 document.getElementById('reset').onclick=()=>{
   grid=Array.from({length:R},()=>Array(C).fill(EMPTY));
-  solvedShown=false; locked=false; hideToast(); draw();
+  solvedShown=false; locked=false; hideBanner(); draw(); saveState();
 };
-document.getElementById('savePng').onclick=()=>{
+document.getElementById('saveImg').onclick=()=>{
   const a=document.createElement('a');
   a.download='nonogram.png';
   a.href=canvas.toDataURL('image/png');
   a.click();
 };
-document.getElementById('closeToast').onclick=()=>hideToast();
+document.getElementById('closeBanner').onclick=()=>hideBanner();
 
-function showToast(message="完成！\nお誕生日おめでとう！！"){
-  const el = document.getElementById('toastMsg');
+// フロー内バナー（重ならない）
+function showBanner(message="完成！\nりこちゃんお誕生日おめでとう！！"){
+  const el = document.getElementById('bannerMsg');
   el.textContent = message; // \n は CSS pre-line で改行表示
-  document.getElementById('toast').hidden = false;
+  const b = document.getElementById('banner');
+  b.classList.add('show');
+  // 上部にスクロールしてメッセージと盤面上部を同時に見やすく
+  window.scrollTo({top: 0, behavior: 'smooth'});
 }
-function hideToast(){ document.getElementById('toast').hidden=true; }
+function hideBanner(){ document.getElementById('banner').classList.remove('show'); }
 
 // ---- 便利関数
 function css(name){return getComputedStyle(document.documentElement).getPropertyValue(name).trim();}
@@ -152,7 +184,7 @@ function isSolved(){
   return true;
 }
 
-// クリア時の処理：盤面の×を全削除＆ロック＆祝バナー表示
+// クリア時の処理：盤面の×を全削除＆ロック＆祝バナー表示（重ならない）
 function onSolved(){
   // 盤面の×（MARKX）をすべてEMPTYに
   for(let r=0;r<R;r++){
@@ -162,18 +194,32 @@ function onSolved(){
   }
   locked = true;
   solvedShown = true;
-  draw();                            // ×除去後の再描画
-  showToast("完成！\nお誕生日おめでとう！！"); // 祝バナー表示（暗転なし・中央揃え）
+  draw();                     // ×除去後の再描画
+  showBanner("完成！\nお誕生日おめでとう！！"); // バナーをフロー内に表示
+  saveState();
 }
 
-// ---- レイアウト計算＆描画
+// ---- 高DPI対応のレイアウト計算＆描画
 function resizeCanvas(){
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
   const vw = Math.min(900, Math.max(320, document.documentElement.clientWidth-24));
   const cell = Math.max(24, Math.floor(vw / (ls + C + 2))); // 余裕を持たせる
   const pad  = 12;
-  canvas.width  = (ls + C)*cell + pad*2;
-  canvas.height = (ts + R)*cell + pad*2;
+
+  // CSSピクセル上のサイズ
+  const cssW = (ls + C)*cell + pad*2;
+  const cssH = (ts + R)*cell + pad*2;
+  canvas.style.width = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+
+  // 実ピクセルはDPRで拡大して、描画をくっきり
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width  = Math.round(cssW * dpr);
+  canvas.height = Math.round(cssH * dpr);
+
+  // 座標系をCSSピクセルに合わせる
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
   canvas.dataset.cell=cell; canvas.dataset.pad=pad;
 }
 
@@ -270,12 +316,17 @@ function draw(){
 }
 
 // ---- 操作（ロック中は無効）
-// クリック・ドラッグ：起点で「最終状態」を決定し、その状態で塗り続ける（循環トグルは起点のみ）
 canvas.addEventListener('mousedown',down); window.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
 canvas.addEventListener('touchstart',down,{passive:false}); canvas.addEventListener('touchmove',move,{passive:false}); window.addEventListener('touchend',up,{passive:false});
 
+// 画面サイズ変化でリフレッシュ（高DPI描画維持）
+window.addEventListener('resize', ()=>draw(), {passive:true});
+
 function down(e){
   if(locked) return;
+  // ほんの少しのハプティック（対応端末のみ）
+  navigator.vibrate?.(10);
+
   const p=hit(e); if(!p) return;
   isDown=true; lastRC=p;
   // 起点でだけ循環トグルして、その結果をドラッグの塗り状態にする
@@ -291,7 +342,6 @@ function move(e){
   const p=hit(e); if(!p) return;
   const [r,c]=p;
   if(!lastRC || r!==lastRC[0] || c!==lastRC[1]){
-    // 現在セルを dragPaintState に上書き（循環しない）
     if(dragPaintState!==null) grid[r][c] = dragPaintState;
     lastRC=p;
     postUpdate();
@@ -311,14 +361,36 @@ function hit(e){
   return (r<0||c<0||r>=R||c>=C)? null:[r,c];
 }
 
+// ---- 進捗の自動保存・復元
+function saveState(){
+  try{
+    localStorage.setItem(LS_KEY, JSON.stringify({grid, locked, solvedShown}));
+  }catch(_){}
+}
+function isValidState(s){
+  if(!s || !Array.isArray(s.grid) || s.grid.length!==R) return false;
+  for(const row of s.grid){ if(!Array.isArray(row) || row.length!==C) return false; }
+  return true;
+}
+function loadState(){
+  try{
+    const s = JSON.parse(localStorage.getItem(LS_KEY));
+    if(isValidState(s)){
+      grid = s.grid; locked = !!s.locked; solvedShown = !!s.solvedShown;
+    }
+  }catch(_){}
+}
+
 function postUpdate(){
   draw();
+  saveState();
   if(!solvedShown && isSolved()){
-    onSolved(); // ×削除＋ロック＋祝バナー
+    onSolved(); // ×削除＋ロック＋祝バナー（フロー内で被らない）
   }
 }
 
-// 初期描画
+// 初期：保存があれば復元して描画
+loadState();
 draw();
 </script>
 </body>
