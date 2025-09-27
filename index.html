@@ -4,7 +4,7 @@
 <meta charset="utf-8"/>
 <meta name="robots" content="noindex,nofollow">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>りこちゃん用</title>
+<title>りこちゃん用パズル</title>
 <style>
   :root{
     --grid-bg:#f8f8f8; --header-bg:#f6f1cd;
@@ -12,7 +12,11 @@
     --btn:#111; --btn-hover:#222; --accent:#0b84ff;
   }
   *{box-sizing:border-box}
-  html,body{margin:0;padding:0;background:#fff;color:#111;font-family:system-ui,-apple-system,"Segoe UI",Arial,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif; min-height:100svh;}
+  html,body{
+    margin:0; padding:0; background:#fff; color:#111;
+    font-family:system-ui,-apple-system,"Segoe UI",Arial,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;
+    min-height:100svh;
+  }
 
   /* 上部バー（ノッチ考慮） */
   .bar{
@@ -42,7 +46,7 @@
     border:1px solid rgba(11,132,255,.25);
   }
 
-  /* 祝バナー：フロー内に出す＝キャンバスを押し下げる（重ならない） */
+  /* 祝バナー（フロー内＝重ならない） */
   .banner{
     display:none; margin:10px auto 0; width:min(92vw,520px);
     background:#fff; color:#111; border:1px solid #ddd; border-radius:12px;
@@ -52,11 +56,17 @@
   .banner .msg{white-space:pre-line; font-weight:700; text-align:center; font-size:18px;}
   .banner .close{border:none; background:#111; color:#fff; padding:8px 14px; border-radius:10px; font-weight:700; cursor:pointer;}
 
-  .wrap{display:flex;justify-content:center;padding:10px}
+  /* 盤面ラッパー：左右も safe-area を加味する */
+  .wrap{
+    display:flex; justify-content:center;
+    padding:10px calc(10px + env(safe-area-inset-right,0)) 10px calc(10px + env(safe-area-inset-left,0));
+    width:100%;
+  }
   canvas{
-    touch-action:none;background:var(--grid-bg);border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.06);
+    touch-action:none; background:var(--grid-bg); border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
     /* stickyヘッダで隠れないよう、スクロール時の余白 */
     scroll-margin-top: calc(90px + env(safe-area-inset-top,0));
+    max-width:100%; /* 念のためのガード */
   }
 </style>
 </head>
@@ -89,6 +99,7 @@ const COL_CLUES = [
 const canvas=document.getElementById('board'); const ctx=canvas.getContext('2d');
 const barEl = document.querySelector('.bar');
 const bannerEl = document.getElementById('banner');
+const wrapEl = document.querySelector('.wrap');
 
 const R=ROW_CLUES.length, C=COL_CLUES.length;
 const EMPTY=0, FILLED=1, MARKX=2;
@@ -141,20 +152,17 @@ function getCol(c){return grid.map(row=>row[c]);}
 // 行/列の達成・矛盾チェック（簡易）
 function lineStatus(line, clues){
   const effClues = (clues[0]===0)? [] : clues.slice();
-  // 連続塗り長の列挙
   const runs=[]; let i=0;
   while(i<line.length){
     if(line[i]===FILLED){ let j=i; while(j<line.length && line[j]===FILLED) j++; runs.push(j-i); i=j; }
     else i++;
   }
-  // 矛盾判定（ゆるめ）
   let bad=false;
   if(runs.length > effClues.length) bad=true;
   if(effClues.length && Math.max(0, ...runs) > Math.max(...effClues)) bad=true;
   const sumRuns=runs.reduce((a,b)=>a+b,0), sumClues=effClues.reduce((a,b)=>a+b,0);
   if(sumRuns > sumClues) bad=true;
 
-  // 達成済みの×
   const used = new Array(clues.length).fill(false);
   if(clues[0]===0){
     if(sumRuns===0) used[0]=true;
@@ -193,7 +201,6 @@ function isSolved(){
 
 // クリア時の処理
 function onSolved(){
-  // 盤面の×（MARKX）をすべてEMPTYに
   for(let r=0;r<R;r++){
     for(let c=0;c<C;c++){
       if(grid[r][c]===MARKX) grid[r][c]=EMPTY;
@@ -201,35 +208,33 @@ function onSolved(){
   }
   locked = true;
   solvedShown = true;
-  draw();                     // ×除去後の再描画
-  showBanner("完成！\nお誕生日おめでとう！！");
+  draw();
+  showBanner("完成！\nりこちゃんお誕生日おめでとう！！");
   saveState();
 }
 
-// ===== レイアウト計算（幅・高さの両方にフィット）＋高DPI =====
+/* ===== レイアウト計算（幅も高さも確実にフィット）＋高DPI ===== */
 function measurements(){
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
 
-  // 使える幅：visualViewport があれば最優先（モバイルのUI高の影響を受けにくい）
-  const vw = Math.floor((window.visualViewport?.width || document.documentElement.clientWidth) - 24);
+  // 横方向は「実際のコンテナ幅」を使用（viewport幅より確実）
+  const wrapW = Math.floor(wrapEl.clientWidth || (document.documentElement.clientWidth - 24));
 
   // 使える高さ：viewport 高さ − ヘッダ − バナー − 余白
   const headerH = Math.ceil(barEl.getBoundingClientRect().height);
   const bannerH = bannerEl.classList.contains('show') ? Math.ceil(bannerEl.getBoundingClientRect().height) : 0;
-  const vh = Math.floor((window.visualViewport?.height || window.innerHeight) - headerH - bannerH - 24);
+  const vpH = (window.visualViewport?.height || window.innerHeight);
+  const usableH = Math.max(120, Math.floor(vpH - headerH - bannerH - 24)); // 最低確保
 
-  // パズル全体の「セル数」
   const wCells = ls + C;
   const hCells = ts + R;
-
   const pad = 12;
 
-  // 幅・高さそれぞれから取れる最大セルサイズ（CSSピクセル基準）
-  const maxCellByW = Math.floor((vw - pad*2) / wCells);
-  const maxCellByH = Math.floor((vh - pad*2) / hCells);
+  const maxCellByW = Math.floor((wrapW - pad*2) / wCells);
+  const maxCellByH = Math.floor((usableH - pad*2) / hCells);
 
-  // 最終セルサイズは「小さい方」。最小値も設定して極端に小さくなりすぎないように
-  const cell = Math.max(18, Math.min(maxCellByW, maxCellByH, 64)); // 上限64は体感用
+  // 必ず収めるため、最小セルを 10px まで許容（小画面想定）
+  const cell = Math.max(10, Math.min(maxCellByW, maxCellByH, 64));
 
   return {ls, ts, pad, cell, wCells, hCells};
 }
@@ -237,13 +242,14 @@ function measurements(){
 function resizeCanvas(){
   const {ls, ts, pad, cell, wCells, hCells} = measurements();
 
-  // CSSピクセル上のサイズ
-  const cssW = wCells*cell + pad*2;
-  const cssH = hCells*cell + pad*2;
+  const cssW = Math.max(0, wCells*cell + pad*2);
+  const cssH = Math.max(0, hCells*cell + pad*2);
+
+  // CSS ピクセルでの表示サイズ
   canvas.style.width = cssW + 'px';
   canvas.style.height = cssH + 'px';
 
-  // 実ピクセル（高DPI）
+  // 高DPI 実ピクセル
   const dpr = window.devicePixelRatio || 1;
   canvas.width  = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
@@ -252,34 +258,28 @@ function resizeCanvas(){
   canvas.dataset.cell=cell; canvas.dataset.pad=pad;
 }
 
-// ===== 描画 =====
+/* ===== 描画 ===== */
 function draw(){
   resizeCanvas();
   const cell=+canvas.dataset.cell, pad=+canvas.dataset.pad;
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
   const x0=pad, y0=pad, boardW=(ls+C)*cell, boardH=(ts+R)*cell;
 
-  // 背景
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle=css('--grid-bg'); ctx.fillRect(x0,y0,boardW,boardH);
   ctx.fillStyle=css('--header-bg'); if(ts>0) ctx.fillRect(x0,y0,boardW,ts*cell); if(ls>0) ctx.fillRect(x0,y0,ls*cell,boardH);
 
-  // 枠線
   ctx.strokeStyle=css('--line');
   for(let j=0;j<=ls+C;j++){ const X=x0+j*cell, k=j-ls; ctx.lineWidth=(k%thickEvery===0)?thick:thin; ctx.beginPath(); ctx.moveTo(X,y0); ctx.lineTo(X,y0+boardH); ctx.stroke(); }
   for(let i=0;i<=ts+R;i++){ const Y=y0+i*cell, k=i-ts; ctx.lineWidth=(k%thickEvery===0)?thick:thin; ctx.beginPath(); ctx.moveTo(x0,Y); ctx.lineTo(x0+boardW,Y); ctx.stroke(); }
   ctx.lineWidth=thick; ctx.strokeRect(x0,y0,boardW,boardH);
 
-  // 手がかりの状態
   const colInfo = COL_CLUES.map((cl,j)=>lineStatus(getCol(j),cl));
   const rowInfo = ROW_CLUES.map((cl,i)=>lineStatus(getRow(i),cl));
 
-  // 手がかり（列）
   drawColClues(colInfo, ls, ts, x0,y0,cell);
-  // 手がかり（行）
   drawRowClues(rowInfo, ls, ts, x0,y0,cell);
 
-  // 盤面
   const gx0=x0+ls*cell, gy0=y0+ts*cell;
   const m=fillStyle.m*cell, rim=Math.max(1,Math.floor(fillStyle.rim*cell)), rad=fillStyle.rad*cell;
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
@@ -289,7 +289,6 @@ function draw(){
       roundRectFill(x+m,y+m,cell-2*m,cell-2*m,Math.max(0,rad-1),'#000');
     }
   }
-  // ×
   ctx.strokeStyle=css('--x'); const xm=0.22*cell, xw=Math.max(1,Math.floor(0.09*cell)); ctx.lineWidth=xw;
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
     if(grid[r][c]===MARKX){
@@ -349,12 +348,11 @@ function draw(){
 canvas.addEventListener('mousedown',down); window.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
 canvas.addEventListener('touchstart',down,{passive:false}); canvas.addEventListener('touchmove',move,{passive:false}); window.addEventListener('touchend',up,{passive:false});
 
-// 画面サイズ・回転・UI変化でリフレッシュ（高DPI描画維持）
+// 回転・UI変化でリフレッシュ
 const scheduleRedraw = (() => {
   let t=null;
   return (center=false) => {
     if(t) cancelAnimationFrame(t);
-    // アドレスバーのアニメや回転の完了を待つため2フレームほど遅延
     t = requestAnimationFrame(()=>requestAnimationFrame(()=>{
       draw();
       if(center){ ensureCanvasInView(); }
@@ -379,16 +377,14 @@ function ensureCanvasInView(){
 
 function down(e){
   if(locked) return;
-  // ほんの少しのハプティック（対応端末のみ）
-  navigator.vibrate?.(10);
+  navigator.vibrate?.(10); // 軽い手応え（対応端末）
 
   const p=hit(e); if(!p) return;
   isDown=true; lastRC=p;
-  // 起点でだけ循環トグルして、その結果をドラッグの塗り状態にする
   const [r,c]=p;
   const nextState = (grid[r][c]+1)%3; // 0->1->2->0
   grid[r][c] = nextState;
-  dragPaintState = nextState;         // 以降はこの状態で塗る（上書き）
+  dragPaintState = nextState;
   postUpdate();
   e.preventDefault();
 }
@@ -440,7 +436,7 @@ function postUpdate(){
   draw();
   saveState();
   if(!solvedShown && isSolved()){
-    onSolved(); // ×削除＋ロック＋祝バナー（フロー内で被らない）
+    onSolved();
   }
 }
 
