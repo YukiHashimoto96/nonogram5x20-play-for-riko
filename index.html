@@ -66,7 +66,7 @@
     touch-action:none; background:var(--grid-bg); border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
     /* stickyヘッダで隠れないよう、スクロール時の余白 */
     scroll-margin-top: calc(90px + env(safe-area-inset-top,0));
-    max-width:100%; /* 念のためのガード */
+    max-width:100%;
   }
 </style>
 </head>
@@ -108,7 +108,7 @@ let grid = Array.from({length:R},()=>Array(C).fill(EMPTY));
 const thickEvery=5, thin=1, thick=3;
 const yAdjRatio=-0.05;                  // 数字を少し上に
 const clueRatio=0.82;                   // 数字サイズ（セル比）
-const fillStyle={m:0.12, rim:0.06, rad:0.20}; // 黒マスの見た目
+const fillStyle={mRatio:0.12, rimRatio:0.055, radRatio:0.20}; // 黒マスの見た目（リム少し細め）
 
 let solvedShown = false;  // お祝い表示済み
 let locked = false;       // 盤面ロック
@@ -137,7 +137,6 @@ function showBanner(message="完成！\nりこちゃんお誕生日おめでと�
   const el = document.getElementById('bannerMsg');
   el.textContent = message; // \n は CSS pre-line で改行表示
   bannerEl.classList.add('show');
-  // 上部にスクロールしてメッセージと盤面上部を同時に見やすく
   window.scrollTo({top: 0, behavior: 'smooth'});
 }
 function hideBanner(){ bannerEl.classList.remove('show'); }
@@ -217,7 +216,7 @@ function onSolved(){
 function measurements(){
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
 
-  // 横方向は「実際のコンテナ幅」を使用（viewport幅より確実）
+  // 横方向は「実際のコンテナ幅」
   const wrapW = Math.floor(wrapEl.clientWidth || (document.documentElement.clientWidth - 24));
 
   // 使える高さ：viewport 高さ − ヘッダ − バナー − 余白
@@ -233,7 +232,7 @@ function measurements(){
   const maxCellByW = Math.floor((wrapW - pad*2) / wCells);
   const maxCellByH = Math.floor((usableH - pad*2) / hCells);
 
-  // 必ず収めるため、最小セルを 10px まで許容（小画面想定）
+  // 必ず収めるため、最小セルを 10px まで許容
   const cell = Math.max(10, Math.min(maxCellByW, maxCellByH, 64));
 
   return {ls, ts, pad, cell, wCells, hCells};
@@ -258,44 +257,75 @@ function resizeCanvas(){
   canvas.dataset.cell=cell; canvas.dataset.pad=pad;
 }
 
-/* ===== 描画 ===== */
+/* ===== 描画（順序を変更：マス→×→グリッド→手がかり） =====
+   ※ グリッド線を最後に描くことで、白い縁が罫線に被って“浮く”印象を解消します。 */
 function draw(){
   resizeCanvas();
   const cell=+canvas.dataset.cell, pad=+canvas.dataset.pad;
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
   const x0=pad, y0=pad, boardW=(ls+C)*cell, boardH=(ts+R)*cell;
 
+  // 背景
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle=css('--grid-bg'); ctx.fillRect(x0,y0,boardW,boardH);
   ctx.fillStyle=css('--header-bg'); if(ts>0) ctx.fillRect(x0,y0,boardW,ts*cell); if(ls>0) ctx.fillRect(x0,y0,ls*cell,boardH);
 
-  ctx.strokeStyle=css('--line');
-  for(let j=0;j<=ls+C;j++){ const X=x0+j*cell, k=j-ls; ctx.lineWidth=(k%thickEvery===0)?thick:thin; ctx.beginPath(); ctx.moveTo(X,y0); ctx.lineTo(X,y0+boardH); ctx.stroke(); }
-  for(let i=0;i<=ts+R;i++){ const Y=y0+i*cell, k=i-ts; ctx.lineWidth=(k%thickEvery===0)?thick:thin; ctx.beginPath(); ctx.moveTo(x0,Y); ctx.lineTo(x0+boardW,Y); ctx.stroke(); }
-  ctx.lineWidth=thick; ctx.strokeRect(x0,y0,boardW,boardH);
-
-  const colInfo = COL_CLUES.map((cl,j)=>lineStatus(getCol(j),cl));
-  const rowInfo = ROW_CLUES.map((cl,i)=>lineStatus(getRow(i),cl));
-
-  drawColClues(colInfo, ls, ts, x0,y0,cell);
-  drawRowClues(rowInfo, ls, ts, x0,y0,cell);
-
+  // まず「塗り」を描く（白リム＋黒）
   const gx0=x0+ls*cell, gy0=y0+ts*cell;
-  const m=fillStyle.m*cell, rim=Math.max(1,Math.floor(fillStyle.rim*cell)), rad=fillStyle.rad*cell;
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
     if(grid[r][c]===FILLED){
       const x=gx0+c*cell, y=gy0+r*cell;
-      roundRectStroke(x+m/2,y+m/2,cell-m,cell-m,rad,'#fff',rim);
-      roundRectFill(x+m,y+m,cell-2*m,cell-2*m,Math.max(0,rad-1),'#000');
+      // リムと塗りのサイズをセル比から計算（以前の雰囲気に近づける）
+      const rim = Math.max(1, Math.floor(fillStyle.rimRatio*cell));
+      const m   = Math.max(rim*2, Math.floor(fillStyle.mRatio*cell)); // リムが線に触れにくいよう余白を確保
+      const rad = fillStyle.radRatio*cell;
+
+      // 白リム（完全にセル内で完結するよう、stroke領域も十分に内側に）
+      roundRectStroke(x+m,y+m,cell-2*m,cell-2*m,Math.max(0,rad-1),'#fff',rim);
+
+      // 中の黒（リムよりさらに一段階小さくすることで“浮き”を抑制）
+      const innerPad = Math.max(1, Math.floor(rim*0.8));
+      roundRectFill(x+m+innerPad,y+m+innerPad,cell-2*(m+innerPad),cell-2*(m+innerPad),Math.max(0,rad-2),'#000');
     }
   }
-  ctx.strokeStyle=css('--x'); const xm=0.22*cell, xw=Math.max(1,Math.floor(0.09*cell)); ctx.lineWidth=xw;
+
+  // × を描く
+  ctx.strokeStyle=css('--x');
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
     if(grid[r][c]===MARKX){
       const x=gx0+c*cell, y=gy0+r*cell;
+      const xm=0.22*cell, xw=Math.max(1,Math.floor(0.09*cell));
+      ctx.lineWidth=xw;
       ctx.beginPath(); ctx.moveTo(x+xm,y+xm); ctx.lineTo(x+cell-xm,y+cell-xm); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(x+xm,y+cell-xm); ctx.lineTo(x+cell-xm,y+xm); ctx.stroke();
     }
+  }
+
+  // グリッド線（最後に重ねる＝罫線が常に最前面）
+  drawGridLines();
+
+  // 手がかりの状態を計算してから、手がかりを最後に描く（線より上に文字）
+  const colInfo = COL_CLUES.map((cl,j)=>lineStatus(getCol(j),cl));
+  const rowInfo = ROW_CLUES.map((cl,i)=>lineStatus(getRow(i),cl));
+  drawColClues(colInfo, ls, ts, x0,y0,cell);
+  drawRowClues(rowInfo, ls, ts, x0,y0,cell);
+
+  function drawGridLines(){
+    ctx.strokeStyle=css('--line');
+    // 縦線
+    for(let j=0;j<=ls+C;j++){
+      const X=x0+j*cell, k=j-ls;
+      ctx.lineWidth=(k%thickEvery===0)?thick:thin;
+      ctx.beginPath(); ctx.moveTo(X,y0); ctx.lineTo(X,y0+boardH); ctx.stroke();
+    }
+    // 横線
+    for(let i=0;i<=ts+R;i++){
+      const Y=y0+i*cell, k=i-ts;
+      ctx.lineWidth=(k%thickEvery===0)?thick:thin;
+      ctx.beginPath(); ctx.moveTo(x0,Y); ctx.lineTo(x0+boardW,Y); ctx.stroke();
+    }
+    // 外枠
+    ctx.lineWidth=thick; ctx.strokeRect(x0,y0,boardW,boardH);
   }
 
   function drawColClues(infos, ls, ts, x0,y0,cell){
