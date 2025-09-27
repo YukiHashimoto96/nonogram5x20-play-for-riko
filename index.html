@@ -9,7 +9,7 @@
   :root{
     --grid-bg:#f8f8f8; --header-bg:#f6f1cd;
     --line:#000; --x:#808080; --warn:#d74a4a;
-    --btn:#111; --btn-hover:#222; --accent:#0b84ff;
+    --btn:#111; --btn-hover:#222;
   }
   *{box-sizing:border-box}
   html,body{
@@ -24,29 +24,17 @@
     padding:calc(10px + env(safe-area-inset-top,0)) 12px 12px; border-bottom:1px solid #e5e5e5; background:#fff
   }
   .bar button{
-    padding:10px 14px;
-    border:1px solid var(--btn);
-    border-radius:12px;
-    background:var(--btn);
-    color:#fff;
-    font-weight:800;
-    font-size:16px;
-    letter-spacing:.02em;
-    box-shadow:0 2px 10px rgba(0,0,0,.08);
-    cursor:pointer;
+    padding:10px 14px; border:1px solid var(--btn); border-radius:12px;
+    background:var(--btn); color:#fff; font-weight:800; font-size:16px; letter-spacing:.02em;
+    box-shadow:0 2px 10px rgba(0,0,0,.08); cursor:pointer;
   }
   .bar button:hover{background:var(--btn-hover)}
   .small{
-    color:#111;
-    font-size:15px;
-    font-weight:800;
-    padding:6px 10px;
-    border-radius:999px;
-    background:rgba(11,132,255,.10);
-    border:1px solid rgba(11,132,255,.25);
+    color:#111; font-size:15px; font-weight:800;
+    padding:6px 10px; border-radius:999px; background:rgba(11,132,255,.10); border:1px solid rgba(11,132,255,.25);
   }
 
-  /* 祝バナー（フロー内＝重ならない） */
+  /* お祝いバナー（フロー内＝重ならない） */
   .banner{
     display:none; margin:10px auto 0; width:min(92vw,520px);
     background:#fff; color:#111; border:1px solid #ddd; border-radius:12px;
@@ -56,33 +44,38 @@
   .banner .msg{white-space:pre-line; font-weight:700; text-align:center; font-size:18px;}
   .banner .close{border:none; background:#111; color:#fff; padding:8px 14px; border-radius:10px; font-weight:700; cursor:pointer;}
 
-  /* 盤面ラッパー：左右も safe-area を加味する */
+  /* 盤面ラッパー：横スクロールを許可（-webkit 慣性有効） */
   .wrap{
-    display:flex; justify-content:center;
-    padding:10px calc(10px + env(safe-area-inset-right,0)) 10px calc(10px + env(safe-area-inset-left,0));
-    width:100%;
+    width:100%; padding:10px calc(10px + env(safe-area-inset-right,0)) 10px calc(10px + env(safe-area-inset-left,0));
+    overflow-x:auto; overflow-y:visible; -webkit-overflow-scrolling:touch;
+  }
+  /* 内側にキャンバスを入れて中央寄せ＋余白 */
+  .inner{
+    min-width:min-content; display:flex; justify-content:center;
   }
   canvas{
     touch-action:none; background:var(--grid-bg); border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
     scroll-margin-top: calc(90px + env(safe-area-inset-top,0));
-    max-width:100%;
   }
 </style>
 </head>
 <body>
 <div class="bar">
-  <button id="reset" aria-label="盤面をリセット">リセット</button>
-  <button id="saveImg" aria-label="画像として保存">画像保存</button>
+  <button id="reset">リセット</button>
+  <button id="saveImg">画像保存</button>
   <span class="small">タップ：空→黒→×→空</span>
 </div>
 
-<!-- フロー内バナー（重ならない） -->
 <div id="banner" class="banner" aria-live="polite">
   <div id="bannerMsg" class="msg"></div>
   <button id="closeBanner" class="close">OK</button>
 </div>
 
-<div class="wrap"><canvas id="board" width="600" height="600" role="img" aria-label="ノノグラムの盤面。タップで黒、二回でバツ、三回で空に戻ります。"></canvas></div>
+<div class="wrap">
+  <div class="inner">
+    <canvas id="board" width="600" height="600" role="img" aria-label="ノノグラムの盤面。タップで黒、二回でバツ、三回で空に戻ります。"></canvas>
+  </div>
+</div>
 
 <script>
 /* ===== 固定パズル（5x5・唯一解：X柄） ===== */
@@ -93,220 +86,169 @@ const COL_CLUES = [
   [5],[1],[1,1],[1,1],[1,1],
   [3],[1,1],[1,1],[1,1],[3],
 ];
-/* ========================================= */
 
 const canvas=document.getElementById('board'); const ctx=canvas.getContext('2d');
-const barEl = document.querySelector('.bar');
-const bannerEl = document.getElementById('banner');
-const wrapEl = document.querySelector('.wrap');
+const barEl=document.querySelector('.bar'); const bannerEl=document.getElementById('banner');
+const wrapEl=document.querySelector('.wrap');
 
 const R=ROW_CLUES.length, C=COL_CLUES.length;
 const EMPTY=0, FILLED=1, MARKX=2;
 let grid = Array.from({length:R},()=>Array(C).fill(EMPTY));
 
 const thickEvery=5, thin=1, thick=3;
-const yAdjRatio=-0.05;                  // 数字を少し上に
-const clueRatio=0.82;                   // 数字サイズ（セル比）
+const yAdjRatio=-0.05, clueRatio=0.82;
 
-let solvedShown = false;  // お祝い表示済み
-let locked = false;       // 盤面ロック
+let solvedShown=false, locked=false;
+let isDown=false, lastRC=null, dragPaintState=null;
+const LS_KEY='nonogram-save-v1';
 
-// ドラッグ塗りの「モード」
-let isDown=false, lastRC=null, dragPaintState=null; // null=未決定, 0/1/2=EMPTY/FILLED/MARKX
-
-// --- 進捗の保存用キー
-const LS_KEY = 'nonogram-save-v1';
-
-// ---- UI
+/* ---------- UI ---------- */
 document.getElementById('reset').onclick=()=>{
   grid=Array.from({length:R},()=>Array(C).fill(EMPTY));
   solvedShown=false; locked=false; hideBanner(); draw(); saveState();
 };
 document.getElementById('saveImg').onclick=()=>{
-  const a=document.createElement('a');
-  a.download='nonogram.png';
-  a.href=canvas.toDataURL('image/png');
-  a.click();
+  const a=document.createElement('a'); a.download='nonogram.png'; a.href=canvas.toDataURL('image/png'); a.click();
 };
 document.getElementById('closeBanner').onclick=()=>hideBanner();
-
-// フロー内バナー（重ならない）
 function showBanner(message="完成！\nりこちゃんお誕生日おめでとう！！"){
-  document.getElementById('bannerMsg').textContent = message;
-  bannerEl.classList.add('show');
-  window.scrollTo({top: 0, behavior: 'smooth'});
+  document.getElementById('bannerMsg').textContent=message;
+  bannerEl.classList.add('show'); window.scrollTo({top:0,behavior:'smooth'});
 }
 function hideBanner(){ bannerEl.classList.remove('show'); }
 
-// ---- 便利関数
-function css(name){return getComputedStyle(document.documentElement).getPropertyValue(name).trim();}
-function leftStack(rows){return rows.reduce((m,a)=>Math.max(m,a[0]===0?1:a.length),0);}
-function topStack(cols){return cols.reduce((m,a)=>Math.max(m,a[0]===0?1:a.length),0);}
-function getRow(r){return grid[r].slice();}
-function getCol(c){return grid.map(row=>row[c]);}
+/* ---------- util ---------- */
+const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const leftStack = rows => rows.reduce((m,a)=>Math.max(m,a[0]===0?1:a.length),0);
+const topStack  = cols => cols.reduce((m,a)=>Math.max(m,a[0]===0?1:a.length),0);
+const getRow = r => grid[r].slice();
+const getCol = c => grid.map(row=>row[c]);
 
-// 行/列の達成・矛盾チェック（簡易）
+/* ---------- 判定 ---------- */
 function lineStatus(line, clues){
-  const effClues = (clues[0]===0)? [] : clues.slice();
-  const runs=[]; let i=0;
-  while(i<line.length){
-    if(line[i]===FILLED){ let j=i; while(j<line.length && line[j]===FILLED) j++; runs.push(j-i); i=j; }
-    else i++;
-  }
+  const eff = (clues[0]===0)? [] : clues.slice();
+  const runs=[]; let i=0; while(i<line.length){ if(line[i]===FILLED){ let j=i; while(j<line.length && line[j]===FILLED) j++; runs.push(j-i); i=j; } else i++; }
   let bad=false;
-  if(runs.length > effClues.length) bad=true;
-  if(effClues.length && Math.max(0, ...runs) > Math.max(...effClues)) bad=true;
-  const sumRuns=runs.reduce((a,b)=>a+b,0), sumClues=effClues.reduce((a,b)=>a+b,0);
-  if(sumRuns > sumClues) bad=true;
-
-  const used = new Array(clues.length).fill(false);
-  if(clues[0]===0){
-    if(sumRuns===0) used[0]=true;
-  }else{
-    const rest = effClues.slice();
+  if(runs.length>eff.length) bad=true;
+  if(eff.length && Math.max(0,...runs)>Math.max(...eff)) bad=true;
+  const sumRuns=runs.reduce((a,b)=>a+b,0), sumClues=eff.reduce((a,b)=>a+b,0);
+  if(sumRuns>sumClues) bad=true;
+  const used=new Array(clues.length).fill(false);
+  if(clues[0]===0){ if(sumRuns===0) used[0]=true; }
+  else{
+    const rest=eff.slice();
     runs.forEach(L=>{
-      const k = rest.findIndex(v=>v===L);
-      if(k>=0){
-        for(let i=0;i<clues.length;i++){
-          if(!used[i] && clues[i]===L){ used[i]=true; break; }
-        }
-        rest.splice(k,1);
-      }
+      const k=rest.findIndex(v=>v===L);
+      if(k>=0){ for(let i=0;i<clues.length;i++){ if(!used[i] && clues[i]===L){ used[i]=true; break; } } rest.splice(k,1); }
     });
   }
-  return {used, bad};
+  return {used:used, bad};
 }
-
-// 完全一致（クリア判定用）
 function isLineExact(line, clues){
-  const runs=[]; let i=0;
-  while(i<line.length){
-    if(line[i]===FILLED){ let j=i; while(j<line.length && line[j]===FILLED) j++; runs.push(j-i); i=j; }
-    else i++;
-  }
-  if(clues[0]===0){ return runs.length===0; }
+  const runs=[]; let i=0; while(i<line.length){ if(line[i]===FILLED){ let j=i; while(j<line.length && line[j]===FILLED) j++; runs.push(j-i); i=j; } else i++; }
+  if(clues[0]===0) return runs.length===0;
   if(runs.length!==clues.length) return false;
-  for(let k=0;k<runs.length;k++){ if(runs[k]!==clues[k]) return false; }
+  for(let k=0;k<runs.length;k++) if(runs[k]!==clues[k]) return false;
   return true;
 }
 function isSolved(){
-  for(let r=0;r<R;r++) if(!isLineExact(getRow(r), ROW_CLUES[r])) return false;
-  for(let c=0;c<C;c++) if(!isLineExact(getCol(c), COL_CLUES[c])) return false;
+  for(let r=0;r<R;r++) if(!isLineExact(getRow(r),ROW_CLUES[r])) return false;
+  for(let c=0;c<C;c++) if(!isLineExact(getCol(c),COL_CLUES[c])) return false;
   return true;
 }
-
-// クリア時の処理
 function onSolved(){
-  for(let r=0;r<R;r++){
-    for(let c=0;c<C;c++){
-      if(grid[r][c]===MARKX) grid[r][c]=EMPTY;
-    }
-  }
-  locked = true;
-  solvedShown = true;
-  draw();
-  showBanner("完成！\nりこちゃんお誕生日おめでとう！！");
-  saveState();
+  for(let r=0;r<R;r++) for(let c=0;c<C;c++) if(grid[r][c]===MARKX) grid[r][c]=EMPTY;
+  locked=true; solvedShown=true; draw(); showBanner("完成！\nりこちゃんお誕生日おめでとう！！"); saveState();
 }
 
-/* ===== レイアウト計算（幅も高さも確実にフィット）＋高DPI ===== */
+/* ---------- レイアウト：根本対応 ----------
+   ・縦画面かつ盤面が横長なら「高さ」でセルサイズを決定 → 横スクロール許可
+   ・それ以外は幅基準
+   ・DPRに応じて内部解像度を正しく設定
+------------------------------------------------*/
 function measurements(){
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
+  const wCells=ls+C, hCells=ts+R, pad=12;
 
-  const wrapW = Math.floor(wrapEl.clientWidth || (document.documentElement.clientWidth - 24));
+  const rectWrap = wrapEl.getBoundingClientRect();
+  const wrapW = Math.floor(rectWrap.width);
 
   const headerH = Math.ceil(barEl.getBoundingClientRect().height);
   const bannerH = bannerEl.classList.contains('show') ? Math.ceil(bannerEl.getBoundingClientRect().height) : 0;
   const vpH = (window.visualViewport?.height || window.innerHeight);
   const usableH = Math.max(120, Math.floor(vpH - headerH - bannerH - 24));
 
-  const wCells = ls + C;
-  const hCells = ts + R;
-  const pad = 12;
+  const byW = Math.floor((wrapW - pad*2) / wCells);
+  const byH = Math.floor((usableH - pad*2) / hCells);
 
-  const maxCellByW = Math.floor((wrapW - pad*2) / wCells);
-  const maxCellByH = Math.floor((usableH - pad*2) / hCells);
+  const portrait = (window.innerHeight >= window.innerWidth);
+  const boardIsWide = (wCells >= hCells);
 
-  // 品質確保のため最小セルを16pxに引き上げ（丸角と塗りの見栄えを維持）
-  const cell = Math.max(16, Math.min(maxCellByW, maxCellByH, 64));
-
+  let cell;
+  if (portrait && boardIsWide){
+    // 縦画面・横長：高さベース → 横スクロールOK
+    cell = Math.max(18, Math.min(byH, 72));
+  }else{
+    // それ以外：横幅ベース
+    cell = Math.max(18, Math.min(byW, 72));
+  }
   return {ls, ts, pad, cell, wCells, hCells};
 }
 
 function resizeCanvas(){
   const {ls, ts, pad, cell, wCells, hCells} = measurements();
-
   const cssW = Math.max(0, wCells*cell + pad*2);
   const cssH = Math.max(0, hCells*cell + pad*2);
 
+  // CSS表示サイズ
   canvas.style.width = cssW + 'px';
   canvas.style.height = cssH + 'px';
 
+  // 内部解像度（DPR）
   const dpr = window.devicePixelRatio || 1;
   canvas.width  = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-  // Safariでの線端差を抑える
   ctx.imageSmoothingEnabled = true;
-  ctx.lineCap = 'butt';
-  ctx.lineJoin = 'miter';
-  ctx.miterLimit = 2.5;
+  ctx.lineCap='butt'; ctx.lineJoin='miter'; ctx.miterLimit=2.5;
 
   canvas.dataset.cell=cell; canvas.dataset.pad=pad;
 }
 
-/* ==== 角丸矩形（Safariは roundRect が安定。なければ arcTo でフォールバック） ==== */
-function pathRR(ctx, x,y,w,h,r){
-  const rr = Math.max(2, Math.min(r, w/2, h/2)); // 小さすぎる丸角は潰れやすいので下限2px
-  if (typeof ctx.roundRect === 'function'){
-    ctx.beginPath();
-    ctx.roundRect(x, y, w, h, rr);
-    return;
-  }
+/* ---- 角丸（Safariは roundRect 優先） ---- */
+function pathRR(ctx,x,y,w,h,r){
+  const rr = Math.max(2, Math.min(r, w/2, h/2));
+  if (typeof ctx.roundRect==='function'){ ctx.beginPath(); ctx.roundRect(x,y,w,h,rr); return; }
   ctx.beginPath();
-  ctx.moveTo(x+rr, y);
-  ctx.arcTo(x+w, y,   x+w, y+h, rr);
-  ctx.arcTo(x+w, y+h, x,   y+h, rr);
-  ctx.arcTo(x,   y+h, x,   y,   rr);
-  ctx.arcTo(x,   y,   x+w, y,   rr);
-  ctx.closePath();
+  ctx.moveTo(x+rr,y); ctx.arcTo(x+w,y,x+w,y+h,rr); ctx.arcTo(x+w,y+h,x,y+h,rr);
+  ctx.arcTo(x,y+h,x,y,rr); ctx.arcTo(x,y,x+w,y,rr); ctx.closePath();
 }
-function roundRectStroke(x,y,w,h,r,color,lw){
-  ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=lw; pathRR(ctx,x,y,w,h,r); ctx.stroke(); ctx.restore();
-}
-function roundRectFill(x,y,w,h,r,color){
-  ctx.save(); ctx.fillStyle=color; pathRR(ctx,x,y,w,h,r); ctx.fill(); ctx.restore();
-}
+function rrStroke(x,y,w,h,r,color,lw){ ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=lw; pathRR(ctx,x,y,w,h,r); ctx.stroke(); ctx.restore(); }
+function rrFill(x,y,w,h,r,color){ ctx.save(); ctx.fillStyle=color; pathRR(ctx,x,y,w,h,r); ctx.fill(); ctx.restore(); }
 
-/* ===== 描画（順序：塗り→×→グリッド→手がかり） ===== */
+/* ---------- 描画（塗り→×→グリッド→手がかり） ---------- */
 function draw(){
   resizeCanvas();
   const cell=+canvas.dataset.cell, pad=+canvas.dataset.pad;
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
   const x0=pad, y0=pad, boardW=(ls+C)*cell, boardH=(ts+R)*cell;
 
-  // 背景
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle=css('--grid-bg'); ctx.fillRect(x0,y0,boardW,boardH);
   ctx.fillStyle=css('--header-bg'); if(ts>0) ctx.fillRect(x0,y0,boardW,ts*cell); if(ls>0) ctx.fillRect(x0,y0,ls*cell,boardH);
 
-  // ==== まず黒マスを描画（ピクセル基準のクランプで“スカスカ”を抑制） ====
+  // 塗り（白リム＋黒）: ピクセル基準で安定させる
   const gx0=x0+ls*cell, gy0=y0+ts*cell;
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
     if(grid[r][c]===FILLED){
       const x=gx0+c*cell, y=gy0+r*cell;
-
-      // 端末差を吸収するためのピクセルベース調整
-      const rim = Math.max(1, Math.min(2, Math.floor(cell*0.06)));             // 1〜2px
-      const m   = Math.max(2, Math.min(Math.floor(cell*0.14), Math.floor(cell/4))); // 外周マージン
-      const innerPad = (cell >= 30) ? Math.max(1, Math.floor(rim*0.8)) : 1;    // 小セルでの過剰縮小を防ぐ
-      const rad = Math.max(2, Math.floor(cell*0.18));                           // 角丸は最低2px
-
-      // 白リム（セル内に完全に収める）
-      roundRectStroke(x+m, y+m, cell-2*m, cell-2*m, Math.max(0,rad-1), '#fff', rim);
-      // 中の黒（リムより一段内側）
-      roundRectFill(x+m+innerPad, y+m+innerPad, cell-2*(m+innerPad), cell-2*(m+innerPad), Math.max(0,rad-2), '#000');
+      const rim = Math.max(1, Math.min(2, Math.floor(cell*0.06)));                    // 1〜2px
+      const m   = Math.max(2, Math.min(Math.floor(cell*0.14), Math.floor(cell/4)));   // 外周マージン
+      const innerPad = (cell >= 30) ? Math.max(1, Math.floor(rim*0.8)) : 1;
+      const rad = Math.max(2, Math.floor(cell*0.18));
+      rrStroke(x+m, y+m, cell-2*m, cell-2*m, Math.max(0,rad-1), '#fff', rim);
+      rrFill  (x+m+innerPad, y+m+innerPad, cell-2*(m+innerPad), cell-2*(m+innerPad), Math.max(0,rad-2), '#000');
     }
   }
 
@@ -315,36 +257,23 @@ function draw(){
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
     if(grid[r][c]===MARKX){
       const x=gx0+c*cell, y=gy0+r*cell;
-      const xm=0.22*cell, xw=Math.max(1,Math.floor(0.09*cell));
-      ctx.lineWidth=xw;
+      const xm=0.22*cell, xw=Math.max(1,Math.floor(0.09*cell)); ctx.lineWidth=xw;
       ctx.beginPath(); ctx.moveTo(x+xm,y+xm); ctx.lineTo(x+cell-xm,y+cell-xm); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(x+xm,y+cell-xm); ctx.lineTo(x+cell-xm,y+xm); ctx.stroke();
     }
   }
 
-  // グリッド線（最前面に）
-  drawGridLines();
+  // グリッド（最前面）
+  ctx.strokeStyle=css('--line');
+  for(let j=0;j<=ls+C;j++){ const X=x0+j*cell, k=j-ls; ctx.lineWidth=(k%thickEvery===0)?thick:thin; ctx.beginPath(); ctx.moveTo(X,y0); ctx.lineTo(X,y0+boardH); ctx.stroke(); }
+  for(let i=0;i<=ts+R;i++){ const Y=y0+i*cell, k=i-ts; ctx.lineWidth=(k%thickEvery===0)?thick:thin; ctx.beginPath(); ctx.moveTo(x0,Y); ctx.lineTo(x0+boardW,Y); ctx.stroke(); }
+  ctx.lineWidth=thick; ctx.strokeRect(x0,y0,boardW,boardH);
 
   // 手がかり
   const colInfo = COL_CLUES.map((cl,j)=>lineStatus(getCol(j),cl));
   const rowInfo = ROW_CLUES.map((cl,i)=>lineStatus(getRow(i),cl));
   drawColClues(colInfo, ls, ts, x0,y0,cell);
   drawRowClues(rowInfo, ls, ts, x0,y0,cell);
-
-  function drawGridLines(){
-    ctx.strokeStyle=css('--line');
-    for(let j=0;j<=ls+C;j++){
-      const X=x0+j*cell, k=j-ls;
-      ctx.lineWidth=(k%thickEvery===0)?thick:thin;
-      ctx.beginPath(); ctx.moveTo(X,y0); ctx.lineTo(X,y0+boardH); ctx.stroke();
-    }
-    for(let i=0;i<=ts+R;i++){
-      const Y=y0+i*cell, k=i-ts;
-      ctx.lineWidth=(k%thickEvery===0)?thick:thin;
-      ctx.beginPath(); ctx.moveTo(x0,Y); ctx.lineTo(x0+boardW,Y); ctx.stroke();
-    }
-    ctx.lineWidth=thick; ctx.strokeRect(x0,y0,boardW,boardH);
-  }
 
   function drawColClues(infos, ls, ts, x0,y0,cell){
     const fontPx=Math.floor(cell*clueRatio), yAdj=yAdjRatio*cell;
@@ -389,67 +318,43 @@ function draw(){
   }
 }
 
-// ---- 操作（ロック中は無効）
+/* ---------- 入力（ロック中は無効） ---------- */
 canvas.addEventListener('mousedown',down); window.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
 canvas.addEventListener('touchstart',down,{passive:false}); canvas.addEventListener('touchmove',move,{passive:false}); window.addEventListener('touchend',up,{passive:false});
 
-// 回転・UI変化でリフレッシュ
-const scheduleRedraw = (() => {
-  let t=null;
-  return (center=false) => {
-    if(t) cancelAnimationFrame(t);
-    t = requestAnimationFrame(()=>requestAnimationFrame(()=>{
-      draw();
-      if(center){ ensureCanvasInView(); }
-    }));
-  };
-})();
-
-window.addEventListener('resize', ()=>scheduleRedraw(false), {passive:true});
-window.addEventListener('orientationchange', ()=>scheduleRedraw(true), {passive:true});
-if(window.visualViewport){
-  visualViewport.addEventListener('resize', ()=>scheduleRedraw(false), {passive:true});
-  visualViewport.addEventListener('scroll', ()=>scheduleRedraw(false), {passive:true});
-}
-
-function ensureCanvasInView(){
-  const vpH = window.visualViewport?.height || window.innerHeight;
-  const r = canvas.getBoundingClientRect();
-  if(r.top < 0 || r.bottom > vpH){
-    canvas.scrollIntoView({block:'center', behavior:'smooth'});
-  }
-}
-
 function down(e){
   if(locked) return;
-  navigator.vibrate?.(10); // 軽い手応え（対応端末）
-
+  navigator.vibrate?.(10);
   const p=hit(e); if(!p) return;
   isDown=true; lastRC=p;
-  const [r,c]=p;
-  const nextState = (grid[r][c]+1)%3; // 0->1->2->0
-  grid[r][c] = nextState;
-  dragPaintState = nextState;
-  postUpdate();
-  e.preventDefault();
+  const [r,c]=p; const next=(grid[r][c]+1)%3; grid[r][c]=next; dragPaintState=next;
+  postUpdate(); e.preventDefault();
 }
 function move(e){
   if(locked || !isDown) return;
   const p=hit(e); if(!p) return;
   const [r,c]=p;
   if(!lastRC || r!==lastRC[0] || c!==lastRC[1]){
-    if(dragPaintState!==null) grid[r][c] = dragPaintState;
-    lastRC=p;
-    postUpdate();
+    if(dragPaintState!==null) grid[r][c]=dragPaintState;
+    lastRC=p; postUpdate();
   }
   e.preventDefault();
 }
 function up(){ isDown=false; lastRC=null; dragPaintState=null; }
 
+/* ---- 正確ヒットテスト（ズーム・横スクロール対応） ---- */
+function getCssToLogical(){
+  const dpr=window.devicePixelRatio||1;
+  const rect=canvas.getBoundingClientRect();             // CSS px
+  const logicalW=canvas.width/dpr, logicalH=canvas.height/dpr; // 論理（CSS px 基準）
+  return {scaleX:logicalW/rect.width, scaleY:logicalH/rect.height, rect};
+}
 function hit(e){
-  const rect=canvas.getBoundingClientRect();
-  const sx=(e.touches?e.touches[0].clientX:e.clientX)-rect.left;
-  const sy=(e.touches?e.touches[0].clientY:e.clientY)-rect.top;
+  const {scaleX,scaleY,rect}=getCssToLogical();
+  const cx=(e.touches?e.touches[0].clientX:e.clientX)-rect.left;
+  const cy=(e.touches?e.touches[0].clientY:e.clientY)-rect.top;
+  const sx=cx*scaleX, sy=cy*scaleY;
+
   const cell=+canvas.dataset.cell, pad=+canvas.dataset.pad;
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
   const gx0=pad+ls*cell, gy0=pad+ts*cell;
@@ -457,37 +362,37 @@ function hit(e){
   return (r<0||c<0||r>=R||c>=C)? null:[r,c];
 }
 
-// ---- 進捗の自動保存・復元
-function saveState(){
-  try{
-    localStorage.setItem(LS_KEY, JSON.stringify({grid, locked, solvedShown}));
-  }catch(_){}
-}
-function isValidState(s){
-  if(!s || !Array.isArray(s.grid) || s.grid.length!==R) return false;
-  for(const row of s.grid){ if(!Array.isArray(row) || row.length!==C) return false; }
-  return true;
-}
+/* ---------- 状態保存 ---------- */
+function saveState(){ try{ localStorage.setItem(LS_KEY, JSON.stringify({grid,locked,solvedShown})); }catch{} }
 function loadState(){
   try{
-    const s = JSON.parse(localStorage.getItem(LS_KEY));
-    if(isValidState(s)){
-      grid = s.grid; locked = !!s.locked; solvedShown = !!s.solvedShown;
+    const s=JSON.parse(localStorage.getItem(LS_KEY));
+    if(s && Array.isArray(s.grid) && s.grid.length===R && s.grid.every(row=>Array.isArray(row)&&row.length===C)){
+      grid=s.grid; locked=!!s.locked; solvedShown=!!s.solvedShown;
     }
-  }catch(_){}
+  }catch{}
 }
 
-function postUpdate(){
-  draw();
-  saveState();
-  if(!solvedShown && isSolved()){
-    onSolved();
-  }
+/* ---------- 再描画スケジューラ ----------
+   ※ ズーム中の「scroll」による再レイアウトは外す（座標ズレ防止） */
+const scheduleRedraw=(()=>{
+  let t=null;
+  return (center=false)=>{
+    if(t) cancelAnimationFrame(t);
+    t=requestAnimationFrame(()=>{ draw(); if(center) canvas.scrollIntoView({block:'center'}); });
+  };
+})();
+window.addEventListener('resize', ()=>scheduleRedraw(false), {passive:true});
+window.addEventListener('orientationchange', ()=>scheduleRedraw(true), {passive:true});
+// visualViewport.resize は残すが、scroll は登録しない
+if(window.visualViewport){
+  visualViewport.addEventListener('resize', ()=>scheduleRedraw(false), {passive:true});
 }
 
-// 初期：保存があれば復元して描画
-loadState();
-draw();
+function postUpdate(){ draw(); saveState(); if(!solvedShown && isSolved()) onSolved(); }
+
+/* 初期化 */
+loadState(); draw();
 </script>
 </body>
 </html>
