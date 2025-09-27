@@ -9,7 +9,7 @@
   :root{
     --grid-bg:#f8f8f8; --header-bg:#f6f1cd;
     --line:#000; --x:#808080; --warn:#d74a4a;
-    --btn:#111; --btn-hover:#222;
+    --btn:#111; --btn-hover:#222; --accent:#0b84ff;
   }
   *{box-sizing:border-box}
   html,body{
@@ -18,17 +18,21 @@
     min-height:100svh;
   }
 
-  /* 上部バー（ノッチ考慮） */
+  /* 上部バー */
   .bar{
     position:sticky; top:0; z-index:10; display:flex; gap:10px; flex-wrap:wrap; align-items:center;
     padding:calc(10px + env(safe-area-inset-top,0)) 12px 12px; border-bottom:1px solid #e5e5e5; background:#fff
   }
+  .bar button, .bar select, .bar input[type="number"]{
+    padding:10px 12px; border:1px solid #ccc; border-radius:12px;
+    background:#fff; color:#111; font-weight:700; font-size:15px;
+  }
   .bar button{
-    padding:10px 14px; border:1px solid var(--btn); border-radius:12px;
-    background:var(--btn); color:#fff; font-weight:800; font-size:16px; letter-spacing:.02em;
+    border-color:var(--btn); background:var(--btn); color:#fff; font-size:16px; letter-spacing:.02em;
     box-shadow:0 2px 10px rgba(0,0,0,.08); cursor:pointer;
   }
   .bar button:hover{background:var(--btn-hover)}
+  .label{font-size:13px; color:#333; font-weight:700; margin-left:6px}
   .small{
     color:#111; font-size:15px; font-weight:800;
     padding:6px 10px; border-radius:999px; background:rgba(11,132,255,.10); border:1px solid rgba(11,132,255,.25);
@@ -44,14 +48,21 @@
   .banner .msg{white-space:pre-line; font-weight:700; text-align:center; font-size:18px;}
   .banner .close{border:none; background:#111; color:#fff; padding:8px 14px; border-radius:10px; font-weight:700; cursor:pointer;}
 
-  /* 盤面ラッパー（中央寄せ、横スクロールなし） */
-  .wrap{ display:flex; justify-content:center; padding:10px; width:100%; }
+  /* ラッパー：両方向スクロール可（モードにより溢れる側のみ使う） */
+  .wrap{
+    width:100%;
+    padding:10px calc(10px + env(safe-area-inset-right,0)) 10px calc(10px + env(safe-area-inset-left,0));
+    overflow:auto;               /* x,y 両方に対応（必要な側だけ出る） */
+    -webkit-overflow-scrolling:touch;
+  }
+  .inner{ min-width:min-content; min-height:min-content; display:flex; justify-content:center; }
   canvas{
-    display:block;               /* 余計なベースライン隙間を消す */
-    touch-action:none;           /* 1本指ドラッグで塗れるように。ページの縦スクロールはキャンバス外で可能 */
+    display:block;               /* ベースライン隙間を消す */
+    touch-action:none;           /* 1本指ドラッグで塗れる。ページスクロールはキャンバス外で */
     background:var(--grid-bg);
     border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
-    max-width:100%;              /* 画面幅を超えない担保（念のため） */
+    /* 念のための保険（外側が縮めても縦横比は崩さない） */
+    aspect-ratio: auto;          /* 明示：スクリプトで width/height を常に両方設定 */
   }
 </style>
 </head>
@@ -59,6 +70,17 @@
 <div class="bar">
   <button id="reset">リセット</button>
   <button id="saveImg">画像保存</button>
+
+  <span class="label">表示</span>
+  <select id="fitMode">
+    <option value="auto">自動</option>
+    <option value="fitWidth">幅フィット</option>
+    <option value="fitHeight">高さフィット</option>
+    <option value="fixed">実寸（スクロール）</option>
+  </select>
+
+  <span class="label">セルpx</span>
+  <input id="fixedCell" type="number" min="12" max="96" step="1" value="36" style="width:72px">
   <span class="small">タップ：空→黒→×→空</span>
 </div>
 
@@ -67,7 +89,11 @@
   <button id="closeBanner" class="close">OK</button>
 </div>
 
-<div class="wrap"><canvas id="board" width="600" height="600" role="img" aria-label="ノノグラムの盤面。タップで黒、二回でバツ、三回で空に戻ります。"></canvas></div>
+<div class="wrap">
+  <div class="inner">
+    <canvas id="board" width="600" height="600" role="img" aria-label="ノノグラムの盤面。タップで黒、二回でバツ、三回で空に戻ります。"></canvas>
+  </div>
+</div>
 
 <script>
 /* ===== 固定パズル（5x5・唯一解：X柄） ===== */
@@ -78,10 +104,13 @@ const COL_CLUES = [
   [5],[1],[1,1],[1,1],[1,1],
   [3],[1,1],[1,1],[1,1],[3],
 ];
+/* ========================================= */
 
 const canvas=document.getElementById('board'); const ctx=canvas.getContext('2d');
 const barEl=document.querySelector('.bar'); const bannerEl=document.getElementById('banner');
 const wrapEl=document.querySelector('.wrap');
+const fitSel=document.getElementById('fitMode');
+const fixedCellInput=document.getElementById('fixedCell');
 
 const R=ROW_CLUES.length, C=COL_CLUES.length;
 const EMPTY=0, FILLED=1, MARKX=2;
@@ -92,7 +121,13 @@ const clueRatio=0.82;
 
 let solvedShown=false, locked=false;
 let isDown=false, lastRC=null, dragPaintState=null;
-const LS_KEY='nonogram-save-v1';
+
+/* ==== 永続化（表モード＆セルpx＆盤面） ==== */
+const LS_STATE='nonogram-save-v1';
+const LS_PREFS='nonogram-prefs-v1';
+const prefs = (()=>{ try{ return JSON.parse(localStorage.getItem(LS_PREFS))||{} }catch{return {}} })();
+fitSel.value = prefs.fitMode || 'auto';
+fixedCellInput.value = prefs.fixedCell || 36;
 
 /* ---------- UI ---------- */
 document.getElementById('reset').onclick=()=>{
@@ -103,6 +138,9 @@ document.getElementById('saveImg').onclick=()=>{
   const a=document.createElement('a'); a.download='nonogram.png'; a.href=canvas.toDataURL('image/png'); a.click();
 };
 document.getElementById('closeBanner').onclick=()=>hideBanner();
+fitSel.onchange = ()=>{ savePrefs(); draw(); };
+fixedCellInput.onchange = ()=>{ savePrefs(); draw(); };
+
 function showBanner(message="完成！\nりこちゃんお誕生日おめでとう！！"){
   document.getElementById('bannerMsg').textContent=message;
   bannerEl.classList.add('show'); window.scrollTo({top:0,behavior:'smooth'});
@@ -116,7 +154,7 @@ const topStack  = cols => cols.reduce((m,a)=>Math.max(m,a[0]===0?1:a.length),0);
 const getRow = r => grid[r].slice();
 const getCol = c => grid.map(row=>row[c]);
 
-/* ===== テキストを“真の中心”に描く（未対応はフォールバック） ===== */
+/* ===== テキスト中央描画（対応ブラウザは厳密中央） ===== */
 function fillCenteredText(text, cx, cy, font, color){
   ctx.save();
   ctx.font = font;
@@ -172,32 +210,63 @@ function onSolved(){
   locked=true; solvedShown=true; draw(); showBanner("完成！\nりこちゃんお誕生日おめでとう！！"); saveState();
 }
 
-/* ---------- レイアウト：幅のみでセル決定（横はみ出しゼロ）＋DPR対応 ---------- */
+/* ===== 表示モード別レイアウト =====
+   - どのモードでも「セルは正方形」。DPR にスナップして歪みと滲みを排除。
+   - 必要なら x/y どちらにもスクロール可能（wrap が auto）。
+*/
 function measurements(){
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
   const wCells=ls+C, hCells=ts+R, pad=12;
 
-  // ラッパー幅（0 になる Safari 初期描画対策のフォールバック付き）
-  const wrapW = Math.max(320,
-    Math.floor(wrapEl.getBoundingClientRect().width || document.documentElement.clientWidth || window.innerWidth || 320)
-  );
+  const dpr = window.devicePixelRatio || 1;
 
-  const maxCellByW = Math.floor((wrapW - pad*2) / wCells);
-  const cell = Math.max(18, Math.min(maxCellByW, 72));   // 品質と見やすさの範囲
-  return {ls, ts, pad, cell, wCells, hCells};
-}
+  // 利用可能な領域
+  const rectWrap = wrapEl.getBoundingClientRect();
+  const wrapW = Math.max(320, Math.floor(rectWrap.width || document.documentElement.clientWidth || window.innerWidth || 320));
+  const vpH = (window.visualViewport?.height || window.innerHeight);
+  const headerH = Math.ceil(barEl.getBoundingClientRect().height);
+  const bannerH = bannerEl.classList.contains('show') ? Math.ceil(bannerEl.getBoundingClientRect().height) : 0;
+  const usableH = Math.max(120, Math.floor(vpH - headerH - bannerH - 24)); // マージンぶん控えめ
 
-function resizeCanvas(){
-  const {ls, ts, pad, cell, wCells, hCells} = measurements();
+  // モード決定
+  let mode = fitSel.value;
+  if(mode==='auto'){
+    const portrait = window.innerHeight >= window.innerWidth;
+    const boardIsWide = wCells >= hCells;
+    mode = (portrait && boardIsWide) ? 'fitHeight' : 'fitWidth';
+  }
+
+  // セル算出
+  let cell;
+  if(mode==='fixed'){
+    cell = Number(fixedCellInput.value) || 36;
+  }else if(mode==='fitWidth'){
+    cell = Math.floor((wrapW - pad*2) / wCells);
+  }else if(mode==='fitHeight'){
+    cell = Math.floor((usableH - pad*2) / hCells);
+  }else{
+    cell = Math.floor((wrapW - pad*2) / wCells); // 安全側
+  }
+
+  // 画質＆歪み対策：DPR にスナップ（cell*dpr を整数化）
+  const minCell = 14, maxCell = 96;
+  cell = Math.max(minCell, Math.min(maxCell, cell));
+  cell = Math.max(minCell, Math.min(maxCell, Math.floor(cell * dpr) / dpr));
+
   const cssW = Math.max(0, wCells*cell + pad*2);
   const cssH = Math.max(0, hCells*cell + pad*2);
 
-  // CSS 表示サイズ（画面幅ぴったり）
-  canvas.style.width = cssW + 'px';
+  return {ls, ts, pad, cell, cssW, cssH, dpr};
+}
+
+function resizeCanvas(){
+  const {ls, ts, pad, cell, cssW, cssH, dpr} = measurements();
+
+  // CSS 表示サイズを厳密指定（縦横比が勝手に変わらないように width/height を両方明示）
+  canvas.style.width  = cssW + 'px';
   canvas.style.height = cssH + 'px';
 
-  // 内部解像度（高DPI対応）
-  const dpr = window.devicePixelRatio || 1;
+  // 内部解像度（高DPI）
   canvas.width  = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -208,7 +277,7 @@ function resizeCanvas(){
   canvas.dataset.cell=cell; canvas.dataset.pad=pad;
 }
 
-/* ---- 角丸（Safari は roundRect 優先） ---- */
+/* ---- 角丸 ---- */
 function pathRR(ctx,x,y,w,h,r){
   const rr = Math.max(2, Math.min(r, w/2, h/2));
   if (typeof ctx.roundRect==='function'){ ctx.beginPath(); ctx.roundRect(x,y,w,h,rr); return; }
@@ -224,7 +293,8 @@ function draw(){
   resizeCanvas();
   const cell=+canvas.dataset.cell, pad=+canvas.dataset.pad;
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
-  const x0=pad, y0=pad, boardW=(ls+C)*cell, boardH=(ts+R)*cell;
+  const wCells=ls+C, hCells=ts+R;
+  const x0=pad, y0=pad, boardW=wCells*cell, boardH=hCells*cell;
 
   ctx.clearRect(0,0,canvas.width,canvas.height);
   ctx.fillStyle=css('--grid-bg'); ctx.fillRect(x0,y0,boardW,boardH);
@@ -351,33 +421,35 @@ function hit(e){
 }
 
 /* ---------- 状態保存 ---------- */
-function saveState(){ try{ localStorage.setItem(LS_KEY, JSON.stringify({grid,locked,solvedShown})); }catch{} }
+function saveState(){ try{ localStorage.setItem(LS_STATE, JSON.stringify({grid,locked,solvedShown})); }catch{} }
 function loadState(){
   try{
-    const s=JSON.parse(localStorage.getItem(LS_KEY));
+    const s=JSON.parse(localStorage.getItem(LS_STATE));
     if(s && Array.isArray(s.grid) && s.grid.length===R && s.grid.every(row=>Array.isArray(row)&&row.length===C)){
       grid=s.grid; locked=!!s.locked; solvedShown=!!s.solvedShown;
     }
   }catch{}
 }
-
-/* ---------- 再描画スケジューラ（安全側に簡素化） ---------- */
-const scheduleRedraw=(()=>{
-  let t=null;
-  return ()=>{
-    if(t) cancelAnimationFrame(t);
-    t=requestAnimationFrame(()=>{ draw(); });
-  };
-})();
-window.addEventListener('resize', scheduleRedraw, {passive:true});
-window.addEventListener('orientationchange', scheduleRedraw, {passive:true});
-if(window.visualViewport){
-  visualViewport.addEventListener('resize', scheduleRedraw, {passive:true});
+function savePrefs(){
+  try{
+    localStorage.setItem(LS_PREFS, JSON.stringify({
+      fitMode: fitSel.value,
+      fixedCell: Number(fixedCellInput.value)||36
+    }));
+  }catch{}
 }
 
-function postUpdate(){ draw(); saveState(); if(!solvedShown && isSolved()) onSolved(); }
+/* ---------- リサイズ監視（根本的に安定させる） ---------- */
+const ro = new ResizeObserver(()=> draw());
+ro.observe(wrapEl);
+window.addEventListener('resize', draw, {passive:true});
+window.addEventListener('orientationchange', draw, {passive:true});
+if(window.visualViewport){
+  visualViewport.addEventListener('resize', draw, {passive:true});
+}
 
-/* 初期化 */
+/* ---------- 進捗・初期化 ---------- */
+function postUpdate(){ draw(); saveState(); if(!solvedShown && isSolved()) onSolved(); }
 loadState(); draw();
 </script>
 </body>
