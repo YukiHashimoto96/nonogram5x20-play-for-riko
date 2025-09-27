@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"/>
+<meta name="robots" content="noindex,nofollow">
+<!-- <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"> -->
+<title>Nonogram Play (5x5 demo, PNG only)</title>
+<style>
+  :root{
+    --grid-bg:#f8f8f8; --header-bg:#f6f1cd;
+    --line:#000; --x:#808080; --warn:#d74a4a;
+  }
+  html,body{margin:0;padding:0;background:#fff;color:#111;font-family:system-ui,-apple-system,"Segoe UI",Arial,"Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif}
+  .bar{position:sticky;top:0;z-index:10;display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:10px;border-bottom:1px solid #e5e5e5;background:#fff}
+  .bar button{padding:8px 10px;border:1px solid #ccc;border-radius:8px;background:#fff}
+  .bar button:hover{background:#f3f3f3}
+  .wrap{display:flex;justify-content:center;padding:10px}
+  canvas{touch-action:none;background:var(--grid-bg);border-radius:10px;box-shadow:0 2px 10px rgba(0,0,0,.06)}
+  .small{color:#666;font-size:12px}
+
+  /* 祝バナー（暗転なし・盤面はそのまま見える） */
+  .toast{
+    position:fixed; top:12px; left:50%; transform:translateX(-50%);
+    background:#fff; color:#111; border:1px solid #ddd; border-radius:12px;
+    padding:14px 18px; box-shadow:0 6px 24px rgba(0,0,0,.15);
+    z-index:9999; width: min(92vw, 520px);
+    display:flex; flex-direction:column; align-items:center; gap:10px;
+  }
+  .toast[hidden]{display:none;}
+  .toast .msg{white-space:pre-line; font-weight:700; text-align:center; font-size:18px;}
+  .toast .close{border:none; background:#111; color:#fff; padding:8px 14px; border-radius:10px; font-weight:700;}
+</style>
+</head>
+<body>
+<div class="bar">
+  <button id="reset">リセット</button>
+  <button id="savePng">PNG保存</button>
+  <span class="small">タップ：空→黒→×→空（達成×・矛盾赤／クリアでお祝い＆ロック）</span>
+</div>
+<div class="wrap"><canvas id="board" width="600" height="600"></canvas></div>
+
+<!-- 暗転しない祝バナー（中央揃え＆ボタン下配置） -->
+<div id="toast" class="toast" hidden>
+  <div id="toastMsg" class="msg"></div>
+  <button id="closeToast" class="close">OK</button>
+</div>
+
+<script>
+/* ===== 固定パズル（5x5・唯一解：X柄） ===== */
+const ROW_CLUES = [[1,1],[1,1,1],[3],[1,1,1],[1,1]];
+const COL_CLUES = [[1,1],[1,1,1],[3],[1,1,1],[1,1]];
+/* ========================================= */
+
+const canvas=document.getElementById('board'); const ctx=canvas.getContext('2d');
+const R=ROW_CLUES.length, C=COL_CLUES.length;
+const EMPTY=0, FILLED=1, MARKX=2;
+let grid = Array.from({length:R},()=>Array(C).fill(EMPTY));
+
+const thickEvery=5, thin=1, thick=3;
+const yAdjRatio=-0.05;                  // 数字を少し上に
+const clueRatio=0.82;                   // 数字サイズ（セル比）
+const fillStyle={m:0.12, rim:0.06, rad:0.20}; // 黒マスの見た目
+
+let solvedShown = false;  // お祝い表示済み
+let locked = false;       // 盤面ロック
+
+// ドラッグ塗りの「モード」（起点で決まった最終状態をそのまま塗る）
+let isDown=false, lastRC=null, dragPaintState=null; // null=未決定, 0/1/2=EMPTY/FILLED/MARKX
+
+// ---- UI
+document.getElementById('reset').onclick=()=>{
+  grid=Array.from({length:R},()=>Array(C).fill(EMPTY));
+  solvedShown=false; locked=false; hideToast(); draw();
+};
+document.getElementById('savePng').onclick=()=>{
+  const a=document.createElement('a');
+  a.download='nonogram.png';
+  a.href=canvas.toDataURL('image/png');
+  a.click();
+};
+document.getElementById('closeToast').onclick=()=>hideToast();
+
+function showToast(message="完成！\nお誕生日おめでとう！！"){
+  const el = document.getElementById('toastMsg');
+  el.textContent = message; // \n は CSS pre-line で改行表示
+  document.getElementById('toast').hidden = false;
+}
+function hideToast(){ document.getElementById('toast').hidden=true; }
+
+// ---- 便利関数
+function css(name){return getComputedStyle(document.documentElement).getPropertyValue(name).trim();}
+function leftStack(rows){return rows.reduce((m,a)=>Math.max(m,a[0]===0?1:a.length),0);}
+function topStack(cols){return cols.reduce((m,a)=>Math.max(m,a[0]===0?1:a.length),0);}
+function getRow(r){return grid[r].slice();}
+function getCol(c){return grid.map(row=>row[c]);}
+
+// 行/列の達成・矛盾チェック（簡易で分かりやすく）
+function lineStatus(line, clues){
+  const effClues = (clues[0]===0)? [] : clues.slice();
+  // 連続塗り長の列挙
+  const runs=[]; let i=0;
+  while(i<line.length){
+    if(line[i]===FILLED){ let j=i; while(j<line.length && line[j]===FILLED) j++; runs.push(j-i); i=j; }
+    else i++;
+  }
+  // 矛盾判定（ゆるめ）
+  let bad=false;
+  if(runs.length > effClues.length) bad=true;
+  if(effClues.length && Math.max(0, ...runs) > Math.max(...effClues)) bad=true;
+  const sumRuns=runs.reduce((a,b)=>a+b,0), sumClues=effClues.reduce((a,b)=>a+b,0);
+  if(sumRuns > sumClues) bad=true;
+
+  // 達成済みの×（run と同じ長さの手がかりを左から順に消化）
+  const used = new Array(clues.length).fill(false);
+  if(clues[0]===0){
+    if(sumRuns===0) used[0]=true;
+  }else{
+    const rest = effClues.slice();
+    runs.forEach(L=>{
+      const k = rest.findIndex(v=>v===L);
+      if(k>=0){
+        for(let i=0;i<clues.length;i++){
+          if(!used[i] && clues[i]===L){ used[i]=true; break; }
+        }
+        rest.splice(k,1);
+      }
+    });
+  }
+  return {used, bad};
+}
+
+// 完全一致（クリア判定用）
+function isLineExact(line, clues){
+  const runs=[]; let i=0;
+  while(i<line.length){
+    if(line[i]===FILLED){ let j=i; while(j<line.length && line[j]===FILLED) j++; runs.push(j-i); i=j; }
+    else i++;
+  }
+  if(clues[0]===0){ return runs.length===0; }
+  if(runs.length!==clues.length) return false;
+  for(let k=0;k<runs.length;k++){ if(runs[k]!==clues[k]) return false; }
+  return true;
+}
+function isSolved(){
+  for(let r=0;r<R;r++) if(!isLineExact(getRow(r), ROW_CLUES[r])) return false;
+  for(let c=0;c<C;c++) if(!isLineExact(getCol(c), COL_CLUES[c])) return false;
+  return true;
+}
+
+// クリア時の処理：盤面の×を全削除＆ロック＆祝バナー表示
+function onSolved(){
+  // 盤面の×（MARKX）をすべてEMPTYに
+  for(let r=0;r<R;r++){
+    for(let c=0;c<C;c++){
+      if(grid[r][c]===MARKX) grid[r][c]=EMPTY;
+    }
+  }
+  locked = true;
+  solvedShown = true;
+  draw();                            // ×除去後の再描画
+  showToast("完成！\nお誕生日おめでとう！！"); // 祝バナー表示（暗転なし・中央揃え）
+}
+
+// ---- レイアウト計算＆描画
+function resizeCanvas(){
+  const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
+  const vw = Math.min(900, Math.max(320, document.documentElement.clientWidth-24));
+  const cell = Math.max(24, Math.floor(vw / (ls + C + 2))); // 余裕を持たせる
+  const pad  = 12;
+  canvas.width  = (ls + C)*cell + pad*2;
+  canvas.height = (ts + R)*cell + pad*2;
+  canvas.dataset.cell=cell; canvas.dataset.pad=pad;
+}
+
+function draw(){
+  resizeCanvas();
+  const cell=+canvas.dataset.cell, pad=+canvas.dataset.pad;
+  const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
+  const x0=pad, y0=pad, boardW=(ls+C)*cell, boardH=(ts+R)*cell;
+
+  // 背景
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle=css('--grid-bg'); ctx.fillRect(x0,y0,boardW,boardH);
+  ctx.fillStyle=css('--header-bg'); if(ts>0) ctx.fillRect(x0,y0,boardW,ts*cell); if(ls>0) ctx.fillRect(x0,y0,ls*cell,boardH);
+
+  // 枠線
+  ctx.strokeStyle=css('--line');
+  for(let j=0;j<=ls+C;j++){ const X=x0+j*cell, k=j-ls; ctx.lineWidth=(k%thickEvery===0)?thick:thin; ctx.beginPath(); ctx.moveTo(X,y0); ctx.lineTo(X,y0+boardH); ctx.stroke(); }
+  for(let i=0;i<=ts+R;i++){ const Y=y0+i*cell, k=i-ts; ctx.lineWidth=(k%thickEvery===0)?thick:thin; ctx.beginPath(); ctx.moveTo(x0,Y); ctx.lineTo(x0+boardW,Y); ctx.stroke(); }
+  ctx.lineWidth=thick; ctx.strokeRect(x0,y0,boardW,boardH);
+
+  // 手がかりの状態
+  const colInfo = COL_CLUES.map((cl,j)=>lineStatus(getCol(j),cl));
+  const rowInfo = ROW_CLUES.map((cl,i)=>lineStatus(getRow(i),cl));
+
+  // 手がかり（列）
+  drawColClues(colInfo, ls, ts, x0,y0,cell);
+  // 手がかり（行）
+  drawRowClues(rowInfo, ls, ts, x0,y0,cell);
+
+  // 盤面
+  const gx0=x0+ls*cell, gy0=y0+ts*cell;
+  const m=fillStyle.m*cell, rim=Math.max(1,Math.floor(fillStyle.rim*cell)), rad=fillStyle.rad*cell;
+  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+    if(grid[r][c]===FILLED){
+      const x=gx0+c*cell, y=gy0+r*cell;
+      roundRectStroke(x+m/2,y+m/2,cell-m,cell-m,rad,'#fff',rim);
+      roundRectFill(x+m,y+m,cell-2*m,cell-2*m,Math.max(0,rad-1),'#000');
+    }
+  }
+  // ×
+  ctx.strokeStyle=css('--x'); const xm=0.22*cell, xw=Math.max(1,Math.floor(0.09*cell)); ctx.lineWidth=xw;
+  for(let r=0;r<R;r++)for(let c=0;c<C;c++){
+    if(grid[r][c]===MARKX){
+      const x=gx0+c*cell, y=gy0+r*cell;
+      ctx.beginPath(); ctx.moveTo(x+xm,y+xm); ctx.lineTo(x+cell-xm,y+cell-xm); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x+xm,y+cell-xm); ctx.lineTo(x+cell-xm,y+xm); ctx.stroke();
+    }
+  }
+
+  function drawColClues(infos, ls, ts, x0,y0,cell){
+    const fontPx=Math.floor(cell*clueRatio), yAdj=yAdjRatio*cell;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    for(let j=0;j<C;j++){
+      const clues = COL_CLUES[j][0]===0?[0]:COL_CLUES[j];
+      const used  = infos[j].used; const bad=infos[j].bad;
+      const start = ts - clues.length;
+      for(let k=0;k<clues.length;k++){
+        const cx=x0+(ls+j)*cell + cell/2;
+        const cy=y0+(start+k)*cell + cell/2 + yAdj;
+        ctx.font=`bold ${fontPx}px Arial, sans-serif`;
+        ctx.fillStyle = bad ? css('--warn') : css('--line');
+        ctx.fillText(String(clues[k]), cx, cy);
+        if(used[k]) drawClueX(x0+(ls+j)*cell, y0+(start+k)*cell, cell);
+      }
+    }
+  }
+  function drawRowClues(infos, ls, ts, x0,y0,cell){
+    const fontPx=Math.floor(cell*clueRatio), yAdj=yAdjRatio*cell;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    for(let i=0;i<R;i++){
+      const clues = ROW_CLUES[i][0]===0?[0]:ROW_CLUES[i];
+      const used  = infos[i].used; const bad=infos[i].bad;
+      const start = ls - clues.length;
+      for(let k=0;k<clues.length;k++){
+        const cx=x0+(start+k)*cell + cell/2;
+        const cy=y0+(ts+i)*cell + cell/2 + yAdj;
+        ctx.font=`bold ${fontPx}px Arial, sans-serif`;
+        ctx.fillStyle = bad ? css('--warn') : css('--line');
+        ctx.fillText(String(clues[k]), cx, cy);
+        if(used[k]) drawClueX(x0+(start+k)*cell, y0+(ts+i)*cell, cell);
+      }
+    }
+  }
+  function drawClueX(x,y,cell){
+    const xm=0.22*cell, w=Math.max(1,Math.floor(0.09*cell));
+    ctx.save(); ctx.strokeStyle=css('--x'); ctx.lineWidth=w;
+    ctx.beginPath(); ctx.moveTo(x+xm,y+xm); ctx.lineTo(x+cell-xm,y+cell-xm); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+xm,y+cell-xm); ctx.lineTo(x+cell-xm,y+xm); ctx.stroke();
+    ctx.restore();
+  }
+  function roundRectStroke(x,y,w,h,r,color,lw){ ctx.save(); ctx.strokeStyle=color; ctx.lineWidth=lw; pathRR(x,y,w,h,r); ctx.stroke(); ctx.restore(); }
+  function roundRectFill(x,y,w,h,r,color){ ctx.save(); ctx.fillStyle=color; pathRR(x,y,w,h,r); ctx.fill(); ctx.restore(); }
+  function pathRR(x,y,w,h,r){ const rr=Math.min(r,w/2,h/2); ctx.beginPath(); ctx.moveTo(x+rr,y); ctx.arcTo(x+w,y,x+w,y+h,rr); ctx.arcTo(x+w,y+h,x,y+h,rr); ctx.arcTo(x,y+h,x,y,rr); ctx.arcTo(x,y,x+w,y,rr); ctx.closePath(); }
+}
+
+// ---- 操作（ロック中は無効）
+// クリック・ドラッグ：起点で「最終状態」を決定し、その状態で塗り続ける（循環トグルは起点のみ）
+canvas.addEventListener('mousedown',down); window.addEventListener('mousemove',move); window.addEventListener('mouseup',up);
+canvas.addEventListener('touchstart',down,{passive:false}); canvas.addEventListener('touchmove',move,{passive:false}); window.addEventListener('touchend',up,{passive:false});
+
+function down(e){
+  if(locked) return;
+  const p=hit(e); if(!p) return;
+  isDown=true; lastRC=p;
+  // 起点でだけ循環トグルして、その結果をドラッグの塗り状態にする
+  const [r,c]=p;
+  const nextState = (grid[r][c]+1)%3; // 0->1->2->0
+  grid[r][c] = nextState;
+  dragPaintState = nextState;         // 以降はこの状態で塗る（上書き）
+  postUpdate();
+  e.preventDefault();
+}
+function move(e){
+  if(locked || !isDown) return;
+  const p=hit(e); if(!p) return;
+  const [r,c]=p;
+  if(!lastRC || r!==lastRC[0] || c!==lastRC[1]){
+    // 現在セルを dragPaintState に上書き（循環しない）
+    if(dragPaintState!==null) grid[r][c] = dragPaintState;
+    lastRC=p;
+    postUpdate();
+  }
+  e.preventDefault();
+}
+function up(){ isDown=false; lastRC=null; dragPaintState=null; }
+
+function hit(e){
+  const rect=canvas.getBoundingClientRect();
+  const sx=(e.touches?e.touches[0].clientX:e.clientX)-rect.left;
+  const sy=(e.touches?e.touches[0].clientY:e.clientY)-rect.top;
+  const cell=+canvas.dataset.cell, pad=+canvas.dataset.pad;
+  const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
+  const gx0=pad+ls*cell, gy0=pad+ts*cell;
+  const c=Math.floor((sx-gx0)/cell), r=Math.floor((sy-gy0)/cell);
+  return (r<0||c<0||r>=R||c>=C)? null:[r,c];
+}
+
+function postUpdate(){
+  draw();
+  if(!solvedShown && isSolved()){
+    onSolved(); // ×削除＋ロック＋祝バナー
+  }
+}
+
+// 初期描画
+draw();
+</script>
+</body>
+</html>
