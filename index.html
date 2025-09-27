@@ -44,18 +44,14 @@
   .banner .msg{white-space:pre-line; font-weight:700; text-align:center; font-size:18px;}
   .banner .close{border:none; background:#111; color:#fff; padding:8px 14px; border-radius:10px; font-weight:700; cursor:pointer;}
 
-  /* 盤面ラッパー：横スクロールを許可（-webkit 慣性有効） */
-  .wrap{
-    width:100%; padding:10px calc(10px + env(safe-area-inset-right,0)) 10px calc(10px + env(safe-area-inset-left,0));
-    overflow-x:auto; overflow-y:visible; -webkit-overflow-scrolling:touch;
-  }
-  /* 内側にキャンバスを入れて中央寄せ＋余白 */
-  .inner{
-    min-width:min-content; display:flex; justify-content:center;
-  }
+  /* 盤面ラッパー（中央寄せ、横スクロールなし） */
+  .wrap{ display:flex; justify-content:center; padding:10px; width:100%; }
   canvas{
-    touch-action:none; background:var(--grid-bg); border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
-    scroll-margin-top: calc(90px + env(safe-area-inset-top,0));
+    display:block;               /* 余計なベースライン隙間を消す */
+    touch-action:none;           /* 1本指ドラッグで塗れるように。ページの縦スクロールはキャンバス外で可能 */
+    background:var(--grid-bg);
+    border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.06);
+    max-width:100%;              /* 画面幅を超えない担保（念のため） */
   }
 </style>
 </head>
@@ -71,11 +67,7 @@
   <button id="closeBanner" class="close">OK</button>
 </div>
 
-<div class="wrap">
-  <div class="inner">
-    <canvas id="board" width="600" height="600" role="img" aria-label="ノノグラムの盤面。タップで黒、二回でバツ、三回で空に戻ります。"></canvas>
-  </div>
-</div>
+<div class="wrap"><canvas id="board" width="600" height="600" role="img" aria-label="ノノグラムの盤面。タップで黒、二回でバツ、三回で空に戻ります。"></canvas></div>
 
 <script>
 /* ===== 固定パズル（5x5・唯一解：X柄） ===== */
@@ -96,7 +88,7 @@ const EMPTY=0, FILLED=1, MARKX=2;
 let grid = Array.from({length:R},()=>Array(C).fill(EMPTY));
 
 const thickEvery=5, thin=1, thick=3;
-const yAdjRatio=-0.05, clueRatio=0.82;
+const clueRatio=0.82;
 
 let solvedShown=false, locked=false;
 let isDown=false, lastRC=null, dragPaintState=null;
@@ -123,6 +115,25 @@ const leftStack = rows => rows.reduce((m,a)=>Math.max(m,a[0]===0?1:a.length),0);
 const topStack  = cols => cols.reduce((m,a)=>Math.max(m,a[0]===0?1:a.length),0);
 const getRow = r => grid[r].slice();
 const getCol = c => grid.map(row=>row[c]);
+
+/* ===== テキストを“真の中心”に描く（未対応はフォールバック） ===== */
+function fillCenteredText(text, cx, cy, font, color){
+  ctx.save();
+  ctx.font = font;
+  ctx.textAlign = 'center';
+  const m = ctx.measureText(text);
+  if (typeof m.actualBoundingBoxAscent === 'number' && typeof m.actualBoundingBoxDescent === 'number'){
+    const adj = (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent)/2;
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = color;
+    ctx.fillText(text, cx, cy + adj);
+  } else {
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = color;
+    ctx.fillText(text, cx, cy);
+  }
+  ctx.restore();
+}
 
 /* ---------- 判定 ---------- */
 function lineStatus(line, clues){
@@ -161,37 +172,18 @@ function onSolved(){
   locked=true; solvedShown=true; draw(); showBanner("完成！\nりこちゃんお誕生日おめでとう！！"); saveState();
 }
 
-/* ---------- レイアウト：根本対応 ----------
-   ・縦画面かつ盤面が横長なら「高さ」でセルサイズを決定 → 横スクロール許可
-   ・それ以外は幅基準
-   ・DPRに応じて内部解像度を正しく設定
-------------------------------------------------*/
+/* ---------- レイアウト：幅のみでセル決定（横はみ出しゼロ）＋DPR対応 ---------- */
 function measurements(){
   const ls=leftStack(ROW_CLUES), ts=topStack(COL_CLUES);
   const wCells=ls+C, hCells=ts+R, pad=12;
 
-  const rectWrap = wrapEl.getBoundingClientRect();
-  const wrapW = Math.floor(rectWrap.width);
+  // ラッパー幅（0 になる Safari 初期描画対策のフォールバック付き）
+  const wrapW = Math.max(320,
+    Math.floor(wrapEl.getBoundingClientRect().width || document.documentElement.clientWidth || window.innerWidth || 320)
+  );
 
-  const headerH = Math.ceil(barEl.getBoundingClientRect().height);
-  const bannerH = bannerEl.classList.contains('show') ? Math.ceil(bannerEl.getBoundingClientRect().height) : 0;
-  const vpH = (window.visualViewport?.height || window.innerHeight);
-  const usableH = Math.max(120, Math.floor(vpH - headerH - bannerH - 24));
-
-  const byW = Math.floor((wrapW - pad*2) / wCells);
-  const byH = Math.floor((usableH - pad*2) / hCells);
-
-  const portrait = (window.innerHeight >= window.innerWidth);
-  const boardIsWide = (wCells >= hCells);
-
-  let cell;
-  if (portrait && boardIsWide){
-    // 縦画面・横長：高さベース → 横スクロールOK
-    cell = Math.max(18, Math.min(byH, 72));
-  }else{
-    // それ以外：横幅ベース
-    cell = Math.max(18, Math.min(byW, 72));
-  }
+  const maxCellByW = Math.floor((wrapW - pad*2) / wCells);
+  const cell = Math.max(18, Math.min(maxCellByW, 72));   // 品質と見やすさの範囲
   return {ls, ts, pad, cell, wCells, hCells};
 }
 
@@ -200,11 +192,11 @@ function resizeCanvas(){
   const cssW = Math.max(0, wCells*cell + pad*2);
   const cssH = Math.max(0, hCells*cell + pad*2);
 
-  // CSS表示サイズ
+  // CSS 表示サイズ（画面幅ぴったり）
   canvas.style.width = cssW + 'px';
   canvas.style.height = cssH + 'px';
 
-  // 内部解像度（DPR）
+  // 内部解像度（高DPI対応）
   const dpr = window.devicePixelRatio || 1;
   canvas.width  = Math.round(cssW * dpr);
   canvas.height = Math.round(cssH * dpr);
@@ -216,7 +208,7 @@ function resizeCanvas(){
   canvas.dataset.cell=cell; canvas.dataset.pad=pad;
 }
 
-/* ---- 角丸（Safariは roundRect 優先） ---- */
+/* ---- 角丸（Safari は roundRect 優先） ---- */
 function pathRR(ctx,x,y,w,h,r){
   const rr = Math.max(2, Math.min(r, w/2, h/2));
   if (typeof ctx.roundRect==='function'){ ctx.beginPath(); ctx.roundRect(x,y,w,h,rr); return; }
@@ -238,13 +230,13 @@ function draw(){
   ctx.fillStyle=css('--grid-bg'); ctx.fillRect(x0,y0,boardW,boardH);
   ctx.fillStyle=css('--header-bg'); if(ts>0) ctx.fillRect(x0,y0,boardW,ts*cell); if(ls>0) ctx.fillRect(x0,y0,ls*cell,boardH);
 
-  // 塗り（白リム＋黒）: ピクセル基準で安定させる
+  // 塗り（白リム＋黒）
   const gx0=x0+ls*cell, gy0=y0+ts*cell;
   for(let r=0;r<R;r++)for(let c=0;c<C;c++){
     if(grid[r][c]===FILLED){
       const x=gx0+c*cell, y=gy0+r*cell;
-      const rim = Math.max(1, Math.min(2, Math.floor(cell*0.06)));                    // 1〜2px
-      const m   = Math.max(2, Math.min(Math.floor(cell*0.14), Math.floor(cell/4)));   // 外周マージン
+      const rim = Math.max(1, Math.min(2, Math.floor(cell*0.06)));
+      const m   = Math.max(2, Math.min(Math.floor(cell*0.14), Math.floor(cell/4)));
       const innerPad = (cell >= 30) ? Math.max(1, Math.floor(rim*0.8)) : 1;
       const rad = Math.max(2, Math.floor(cell*0.18));
       rrStroke(x+m, y+m, cell-2*m, cell-2*m, Math.max(0,rad-1), '#fff', rim);
@@ -269,42 +261,38 @@ function draw(){
   for(let i=0;i<=ts+R;i++){ const Y=y0+i*cell, k=i-ts; ctx.lineWidth=(k%thickEvery===0)?thick:thin; ctx.beginPath(); ctx.moveTo(x0,Y); ctx.lineTo(x0+boardW,Y); ctx.stroke(); }
   ctx.lineWidth=thick; ctx.strokeRect(x0,y0,boardW,boardH);
 
-  // 手がかり
+  // 手がかり（厳密中央）
   const colInfo = COL_CLUES.map((cl,j)=>lineStatus(getCol(j),cl));
   const rowInfo = ROW_CLUES.map((cl,i)=>lineStatus(getRow(i),cl));
   drawColClues(colInfo, ls, ts, x0,y0,cell);
   drawRowClues(rowInfo, ls, ts, x0,y0,cell);
 
   function drawColClues(infos, ls, ts, x0,y0,cell){
-    const fontPx=Math.floor(cell*clueRatio), yAdj=yAdjRatio*cell;
-    ctx.textAlign='center'; ctx.textBaseline='middle';
+    const fontPx=Math.floor(cell*clueRatio);
+    const font=`bold ${fontPx}px Arial, sans-serif`;
     for(let j=0;j<C;j++){
       const clues = COL_CLUES[j][0]===0?[0]:COL_CLUES[j];
       const used  = infos[j].used; const bad=infos[j].bad;
       const start = ts - clues.length;
       for(let k=0;k<clues.length;k++){
         const cx=x0+(ls+j)*cell + cell/2;
-        const cy=y0+(start+k)*cell + cell/2 + yAdj;
-        ctx.font=`bold ${fontPx}px Arial, sans-serif`;
-        ctx.fillStyle = bad ? css('--warn') : css('--line');
-        ctx.fillText(String(clues[k]), cx, cy);
+        const cy=y0+(start+k)*cell + cell/2;
+        fillCenteredText(String(clues[k]), cx, cy, font, bad ? css('--warn') : css('--line'));
         if(used[k]) drawClueX(x0+(ls+j)*cell, y0+(start+k)*cell, cell);
       }
     }
   }
   function drawRowClues(infos, ls, ts, x0,y0,cell){
-    const fontPx=Math.floor(cell*clueRatio), yAdj=yAdjRatio*cell;
-    ctx.textAlign='center'; ctx.textBaseline='middle';
+    const fontPx=Math.floor(cell*clueRatio);
+    const font=`bold ${fontPx}px Arial, sans-serif`;
     for(let i=0;i<R;i++){
       const clues = ROW_CLUES[i][0]===0?[0]:ROW_CLUES[i];
       const used  = infos[i].used; const bad=infos[i].bad;
       const start = ls - clues.length;
       for(let k=0;k<clues.length;k++){
         const cx=x0+(start+k)*cell + cell/2;
-        const cy=y0+(ts+i)*cell + cell/2 + yAdj;
-        ctx.font=`bold ${fontPx}px Arial, sans-serif`;
-        ctx.fillStyle = bad ? css('--warn') : css('--line');
-        ctx.fillText(String(clues[k]), cx, cy);
+        const cy=y0+(ts+i)*cell + cell/2;
+        fillCenteredText(String(clues[k]), cx, cy, font, bad ? css('--warn') : css('--line'));
         if(used[k]) drawClueX(x0+(start+k)*cell, y0+(ts+i)*cell, cell);
       }
     }
@@ -342,11 +330,11 @@ function move(e){
 }
 function up(){ isDown=false; lastRC=null; dragPaintState=null; }
 
-/* ---- 正確ヒットテスト（ズーム・横スクロール対応） ---- */
+/* ---- 正確ヒットテスト（ズーム対応） ---- */
 function getCssToLogical(){
   const dpr=window.devicePixelRatio||1;
-  const rect=canvas.getBoundingClientRect();             // CSS px
-  const logicalW=canvas.width/dpr, logicalH=canvas.height/dpr; // 論理（CSS px 基準）
+  const rect=canvas.getBoundingClientRect();
+  const logicalW=canvas.width/dpr, logicalH=canvas.height/dpr;
   return {scaleX:logicalW/rect.width, scaleY:logicalH/rect.height, rect};
 }
 function hit(e){
@@ -373,20 +361,18 @@ function loadState(){
   }catch{}
 }
 
-/* ---------- 再描画スケジューラ ----------
-   ※ ズーム中の「scroll」による再レイアウトは外す（座標ズレ防止） */
+/* ---------- 再描画スケジューラ（安全側に簡素化） ---------- */
 const scheduleRedraw=(()=>{
   let t=null;
-  return (center=false)=>{
+  return ()=>{
     if(t) cancelAnimationFrame(t);
-    t=requestAnimationFrame(()=>{ draw(); if(center) canvas.scrollIntoView({block:'center'}); });
+    t=requestAnimationFrame(()=>{ draw(); });
   };
 })();
-window.addEventListener('resize', ()=>scheduleRedraw(false), {passive:true});
-window.addEventListener('orientationchange', ()=>scheduleRedraw(true), {passive:true});
-// visualViewport.resize は残すが、scroll は登録しない
+window.addEventListener('resize', scheduleRedraw, {passive:true});
+window.addEventListener('orientationchange', scheduleRedraw, {passive:true});
 if(window.visualViewport){
-  visualViewport.addEventListener('resize', ()=>scheduleRedraw(false), {passive:true});
+  visualViewport.addEventListener('resize', scheduleRedraw, {passive:true});
 }
 
 function postUpdate(){ draw(); saveState(); if(!solvedShown && isSolved()) onSolved(); }
