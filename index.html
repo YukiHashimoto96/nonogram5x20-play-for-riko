@@ -4,7 +4,7 @@
 <meta charset="utf-8"/>
 <meta name="robots" content="noindex,nofollow">
 <!-- <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"> -->
-<title>Nonogram Play (5x5 demo, PNG only)</title>
+<title>りこちゃん用</title>
 <style>
   :root{
     --grid-bg:#f8f8f8; --header-bg:#f6f1cd;
@@ -47,8 +47,13 @@
 
 <script>
 /* ===== 固定パズル（5x5・唯一解：X柄） ===== */
-const ROW_CLUES = [[1,1],[1,1,1],[3],[1,1,1],[1,1]];
-const COL_CLUES = [[1,1],[1,1,1],[3],[1,1,1],[1,1]];
+const ROW_CLUES = [[5,1,1,2,3],[1,1,1,1,1,1,1],[5,1,2,1,1],[1,1,1,1,1,1,1],[1,1,1,1,2,3]];
+const COL_CLUES = [
+  [5],[1,1],[1,1],[1,1,2],[3,1],
+  [],[],[5],[],[],
+  [5],[1],[1,1],[1,1],[1,1],
+  [3],[1,1],[1,1],[1,1],[3],
+];
 /* ========================================= */
 
 const canvas=document.getElementById('board'); const ctx=canvas.getContext('2d');
